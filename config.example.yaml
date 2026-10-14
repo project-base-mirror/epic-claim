@@ -1,0 +1,15 @@
+listen: ":8080"
+database: "data/epic-claim.db"
+locale: "zh-CN"
+country: "CN"
+schedule:
+  check_interval: "1h"
+  account_delay: "2m"
+claimer:
+  type: "exec"            # exec | http
+  command: ["python", "worker.py"]
+  http_endpoint: "http://worker:8000"
+notify:
+  telegram:
+    bot_token: ""
+    chat_id: ""
