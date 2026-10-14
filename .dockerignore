@@ -1,0 +1,7 @@
+.git
+.env
+config.yaml
+data
+profiles
+**/node_modules
+*.db*

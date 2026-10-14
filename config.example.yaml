@@ -1,15 +1,12 @@
-listen: ":8080"
+# Bind localhost unless behind an authenticated TLS reverse proxy.
+listen: "127.0.0.1:8080"
 database: "data/epic-claim.db"
-locale: "zh-CN"
-country: "CN"
+locale: "en-US"
+country: "US" # Set to your account's actual store region.
 schedule:
-  check_interval: "1h"
-  account_delay: "2m"
+  check_interval: "1h" # Initial default; dashboard settings persist in SQLite.
+  account_delay: "5s"
 claimer:
-  type: "exec"            # exec | http
-  command: ["python", "worker.py"]
-  http_endpoint: "http://worker:8000"
-notify:
-  telegram:
-    bot_token: ""
-    chat_id: ""
+  type: "exec"
+  command: ["node", "workers/epic/worker.mjs"]
+  timeout: "5m"

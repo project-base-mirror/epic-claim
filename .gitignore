@@ -1,5 +1,10 @@
-bin/
-data/
 config.yaml
-*.db
 .env
+data/
+profiles/
+node_modules/
+epic-claim
+*.db
+*.db-shm
+*.db-wal
+*.lock.tmp

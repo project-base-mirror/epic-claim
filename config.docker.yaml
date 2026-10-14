@@ -1,0 +1,11 @@
+listen: ":8080"
+database: "/data/epic-claim.db"
+locale: "en-US"
+country: "US"
+schedule:
+  check_interval: "1h"
+  account_delay: "5s"
+claimer:
+  type: "exec"
+  command: ["node", "/app/workers/epic/worker.mjs"]
+  timeout: "5m"

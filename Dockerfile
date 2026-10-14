@@ -1,13 +1,20 @@
-FROM golang:1.24-alpine AS build
+FROM golang:1.24.13-bookworm AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /epic-claim ./cmd/epic-claim
 
-FROM alpine:3.20
-RUN apk add --no-cache ca-certificates tzdata
-COPY --from=build /epic-claim /usr/local/bin/epic-claim
+# Browser and package versions must match. No stealth or challenge solver.
+FROM mcr.microsoft.com/playwright:v1.55.1-noble
+ENV NODE_ENV=production EPIC_PROFILE_ROOT=/data/profiles
 WORKDIR /app
+COPY workers/epic/package*.json ./workers/epic/
+RUN cd workers/epic && npm ci --omit=dev --ignore-scripts && npm cache clean --force
+COPY workers/epic ./workers/epic
+COPY --from=build /epic-claim /usr/local/bin/epic-claim
+COPY config.docker.yaml /app/config.yaml
+RUN mkdir -p /data/profiles && chown -R pwuser:pwuser /data /app
+USER pwuser
 EXPOSE 8080
 ENTRYPOINT ["epic-claim", "-config", "/app/config.yaml"]

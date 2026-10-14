@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -36,7 +38,7 @@ type promoOffer struct {
 		StartDate       time.Time `json:"startDate"`
 		EndDate         time.Time `json:"endDate"`
 		DiscountSetting struct {
-			DiscountPercentage int `json:"discountPercentage"`
+			DiscountPercentage *int `json:"discountPercentage"`
 		} `json:"discountSetting"`
 	} `json:"promotionalOffers"`
 }
@@ -60,7 +62,7 @@ type response struct {
 					} `json:"catalogNs"`
 					Price struct {
 						TotalPrice struct {
-							DiscountPrice int `json:"discountPrice"`
+							DiscountPrice *int `json:"discountPrice"`
 						} `json:"totalPrice"`
 					} `json:"price"`
 					Promotions *struct {
@@ -88,18 +90,19 @@ func (c *Client) CurrentFreeGames(ctx context.Context) ([]Game, error) {
 		return nil, fmt.Errorf("epic api: status %d", resp.StatusCode)
 	}
 	var r response
-	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(&r); err != nil {
 		return nil, err
 	}
 	now := time.Now()
 	var out []Game
+	seen := map[string]bool{}
 	for _, e := range r.Data.Catalog.SearchStore.Elements {
-		if e.Promotions == nil || e.Price.TotalPrice.DiscountPrice != 0 {
+		if e.Promotions == nil || e.Price.TotalPrice.DiscountPrice == nil || *e.Price.TotalPrice.DiscountPrice != 0 || e.ID == "" || e.Namespace == "" || e.Title == "" {
 			continue
 		}
 		for _, po := range e.Promotions.PromotionalOffers {
 			for _, o := range po.PromotionalOffers {
-				if o.DiscountSetting.DiscountPercentage != 0 || now.Before(o.StartDate) || now.After(o.EndDate) {
+				if o.DiscountSetting.DiscountPercentage == nil || *o.DiscountSetting.DiscountPercentage != 0 || o.StartDate.IsZero() || !o.StartDate.Before(o.EndDate) || now.Before(o.StartDate) || !now.Before(o.EndDate) {
 					continue
 				}
 				slug := e.ProductSlug
@@ -108,6 +111,11 @@ func (c *Client) CurrentFreeGames(ctx context.Context) ([]Game, error) {
 				} else if len(e.CatalogNs.Mappings) > 0 {
 					slug = e.CatalogNs.Mappings[0].PageSlug
 				}
+				key := e.Namespace + "\x00" + e.ID
+				if seen[key] || slug == "" || strings.ContainsAny(slug, "/?#\\") || slug == "." || slug == ".." {
+					continue
+				}
+				seen[key] = true
 				g := Game{Title: e.Title, ID: e.ID, Namespace: e.Namespace, Slug: slug, StartDate: o.StartDate, EndDate: o.EndDate}
 				if slug != "" {
 					g.URL = "https://store.epicgames.com/p/" + slug

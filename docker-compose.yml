@@ -1,21 +1,23 @@
 services:
   epic-claim:
     build: .
+    init: true
     restart: unless-stopped
     ports:
-      - "8080:8080"
-    volumes:
-      - ./config.yaml:/app/config.yaml:ro
-      - ./data:/app/data
+      - "127.0.0.1:8080:8080"
     environment:
-      - TZ=Asia/Shanghai
-      # - EPIC_CLAIM_MASTER_KEY=change-me
-    depends_on:
-      - worker
-
-  # Placeholder claimer worker (browser login / hCaptcha / checkout).
-  # TODO: replace with epic-freebies-helper, epicgames-freegames-node, or own Playwright worker.
-  worker:
-    image: alpine:3.20
-    command: ["sleep", "infinity"]
-    restart: unless-stopped
+      EPIC_ADMIN_TOKEN: "${EPIC_ADMIN_TOKEN:?Set a private admin token of at least 32 characters}"
+      EPIC_PROFILE_ROOT: /data/profiles
+    volumes:
+      - ./config.docker.yaml:/app/config.yaml:ro
+      - epic-data:/data
+    shm_size: 1gb
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+volumes:
+  epic-data:
