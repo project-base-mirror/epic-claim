@@ -57,7 +57,8 @@ export class PlainDriver {
   async state() { return this.pb.eval(STATE_JS); }
   async open(g) {
     await this.pb.navigate(productURL(g));
-    for (let i = 0; i < 30; i++) { await sleep(1000); const s = await this.state().catch(() => null); if (s && (s.cf || s.owned || s.get || s.signIn || s.hcap) && i >= 3) break; }
+    // Cloudflare's managed check usually clears by itself in a real browser; give it time.
+    for (let i = 0; i < 40; i++) { await sleep(1000); const s = await this.state().catch(() => null); if (s && !s.cf && (s.owned || s.get || s.signIn || s.hcap) && i >= 3) break; }
   }
   async detectBlock() {
     const s = await this.state();
@@ -68,9 +69,12 @@ export class PlainDriver {
   }
   async blocker() {
     const end = Date.now() + (this.waitForUser ? 10 * 60 * 1000 : 0);
+    let waited = false;
     for (;;) {
       const b = await this.detectBlock();
+      if (!b && waited) { for (let i = 0; i < 15; i++) { const s = await this.state().catch(() => null); if (s && (s.owned || s.get || s.purchase)) break; await sleep(1000); } this.emit('claiming'); }
       if (!b || b === 'price_changed' || !this.waitForUser || Date.now() > end) return b;
+      waited = true;
       this.emit(b === 'login_required' ? 'claim_login' : 'claim_challenge');
       await sleep(2500);
     }
