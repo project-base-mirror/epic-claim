@@ -158,5 +158,10 @@ async function main() {
 }
 
 try { emit(await main()); }
-catch { process.stderr.write('Epic login worker failed.\n'); emit('error'); process.exitCode = 1; }
+catch (e) {
+  // Diagnostics without page content, URLs or credentials: error class/code only.
+  const busy = e?.code === 'PROFILE_BUSY';
+  process.stderr.write(`login worker failed: ${String(e?.name || 'Error').slice(0, 40)} ${String(e?.code || '').slice(0, 40)}${/Target page, context or browser has been closed|Executable doesn't exist|Missing X server|ECONNREFUSED|ERR_[A-Z_]+/.exec(String(e?.message))?.[0] ? ' ' + /Target page, context or browser has been closed|Executable doesn't exist|Missing X server|ECONNREFUSED|ERR_[A-Z_]+/.exec(String(e?.message))[0] : ''}\n`);
+  emit(busy ? 'profile_busy' : 'error'); process.exitCode = 1;
+}
 finally { await cleanup(); }

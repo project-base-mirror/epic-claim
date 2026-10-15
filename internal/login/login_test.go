@@ -83,3 +83,21 @@ func TestWrongPasswordAndCrash(t *testing.T) {
 	r2.Start(3, Credentials{})
 	wait(t, m2, "error")
 }
+
+func TestCancelReflectsImmediately(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "w.sh")
+	os.WriteFile(p, []byte(fake), 0o700)
+	m := &memStore{}
+	r := &Runner{Command: []string{p}, Store: m, Timeout: 5 * time.Second}
+	r.Start(4, Credentials{Password: "pw"})
+	wait(t, m, "code_required")
+	if err := r.Send(4, map[string]any{"cancel": true}); err != nil {
+		t.Fatal(err)
+	}
+	m.mu.Lock()
+	got := m.h[len(m.h)-1]
+	m.mu.Unlock()
+	if got != "cancelled" {
+		t.Fatalf("status after cancel = %q", got)
+	}
+}

@@ -37,9 +37,7 @@ provide a secured operator display or bootstrap on the same trusted host. Do not
 expose an unauthenticated remote-debugging endpoint.
 
 Each account uses `account-<ID>` under that root, mode 0700, with an exclusive lock.
-A crashed/hard-killed worker may leave `account-<ID>.lock`; after verifying no
-worker/login browser is using the profile, an operator can remove the empty lock
-directory. The worker never steals locks. Concurrent use is unsupported.
+A crashed/hard-killed worker or a recreated container may leave `account-<ID>.lock`. The lock stores `<hostname> <pid>`; workers reclaim it automatically when the owner is gone (other hostname = old container, or dead PID; legacy locks without owner after 15 minutes) and also remove Chromium's stale `Singleton*` links. A lock held by a live process is never taken over.
 
 ## Protocol
 
