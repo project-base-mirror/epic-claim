@@ -1,102 +1,160 @@
 #!/usr/bin/env node
-// Headless Epic login driven by the web console. Protocol (JSON lines):
-//   stdin  line 1: {"account_id":N,"email":"…","password":"…","totp_secret":"…"}
-//   stdin  later : {"code":"123456"}   (only after we emit code_required)
-//   stdout       : {"status":"logging_in"|"code_required"|"code_submitted"|"ready"|
-//                   "captcha_required"|"two_factor_required"|"login_failed"|"error"}
-// Credentials are never written to stdout/stderr, argv or the environment.
-// No CAPTCHA solving or stealth: a challenge is reported, never bypassed.
+// Epic login driven by the web console. Runs a real (headed) Chromium under
+// Xvfb when DISPLAY is set, otherwise headless. Protocol (JSON lines):
+//   stdin  line 1: {"account_id":N,"email":"…","password":"…","totp_secret":"…","interactive":bool}
+//   stdin  later : {"code":"123456"} | {"input":{…}} | {"done":true} | {"cancel":true}
+//   stdout       : {"status":"…"}  and  {"frame":"<base64 jpeg>"} (live view)
+// Credentials never reach stdout/stderr/argv/env. Challenges (Cloudflare,
+// hCaptcha…) are never solved automatically: the user solves them in the live view.
 import readline from 'node:readline';
 import { acquireProfile } from './profile.mjs';
 import { totp } from './totp.mjs';
-import { classify, SELECTORS, SUCCESS_URL, loginURL } from './login-flow.mjs';
+import { classify, SELECTORS, SUCCESS_URL, loginURL, isSuccessURL } from './login-flow.mjs';
 
-const emit = status => process.stdout.write(JSON.stringify({ status }) + '\n');
-const rl = readline.createInterface({ input: process.stdin });
-const lines = rl[Symbol.asyncIterator]();
-const nextLine = async ms => {
-  let t; const timeout = new Promise(r => { t = setTimeout(() => r({ done: true }), ms); });
-  const r = await Promise.race([lines.next(), timeout]); clearTimeout(t);
-  return r.done ? null : r.value;
-};
+const W = 1280, H = 860;
+const out = o => process.stdout.write(JSON.stringify(o) + '\n');
+const emit = status => out({ status });
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-let context, lock;
+const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+let firstResolve; const firstLine = new Promise(r => { firstResolve = r; });
+const codes = []; let codeWaiter = null;
+const control = { done: false, cancel: false };
+let page, context, lock, cdp, streaming = false;
+rl.on('line', line => {
+  if (firstResolve) { const f = firstResolve; firstResolve = null; return f(line); }
+  let m; try { m = JSON.parse(line); } catch { return; }
+  if (m.done) control.done = true;
+  else if (m.cancel) control.cancel = true;
+  else if (typeof m.code === 'string') { codes.push(m.code); codeWaiter?.(); }
+  else if (m.input) handleInput(m.input).catch(() => {});
+});
+rl.on('close', () => { control.cancel = true; firstResolve?.(null); });
+
 const cleanup = async () => { await context?.close().catch(() => {}); await lock?.release().catch(() => {}); rl.close(); };
 for (const s of ['SIGTERM', 'SIGINT']) process.once(s, async () => { await cleanup(); process.exit(1); });
 
+// ---- live view (CDP screencast) and input forwarding ----
+async function attach(p) {
+  if (page === p && cdp) return;
+  await cdp?.send('Page.stopScreencast').catch(() => {});
+  await cdp?.detach().catch(() => {});
+  page = p; cdp = null;
+  if (!streaming) return;
+  cdp = await context.newCDPSession(p);
+  cdp.on('Page.screencastFrame', f => { out({ frame: f.data }); cdp?.send('Page.screencastFrameAck', { sessionId: f.sessionId }).catch(() => {}); });
+  await cdp.send('Page.startScreencast', { format: 'jpeg', quality: 60, maxWidth: W, maxHeight: H, everyNthFrame: 1 });
+}
+async function startStream() { if (streaming) return; streaming = true; const p = page; page = null; await attach(p); }
+const SPECIAL = new Set(['Enter', 'Backspace', 'Tab', 'Escape', 'Delete', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown', ' ']);
+async function handleInput(i) {
+  if (!page || !streaming) return;
+  const x = Math.max(0, Math.min(W, Number(i.x) || 0)), y = Math.max(0, Math.min(H, Number(i.y) || 0));
+  switch (i.type) {
+    case 'move': return page.mouse.move(x, y);
+    case 'down': await page.mouse.move(x, y); return page.mouse.down();
+    case 'up': await page.mouse.move(x, y); return page.mouse.up();
+    case 'click': return page.mouse.click(x, y);
+    case 'wheel': return page.mouse.wheel(0, Math.max(-2000, Math.min(2000, Number(i.dy) || 0)));
+    case 'key': {
+      const k = String(i.key || '');
+      if (SPECIAL.has(k)) return page.keyboard.press(k === ' ' ? 'Space' : k);
+      if ((i.ctrl || i.meta) && /^[acvxz]$/i.test(k)) return page.keyboard.press('Control+' + k.toLowerCase());
+      if ([...k].length === 1) return page.keyboard.insertText(k);
+      return;
+    }
+    case 'text': return page.keyboard.insertText(String(i.text || '').slice(0, 512));
+  }
+}
+
+async function enterCode(code) {
+  const split = page.locator(SELECTORS.codeSplit);
+  if (await split.count() > 1) { await split.first().click(); await page.keyboard.type(code, { delay: 60 }); }
+  else await page.locator(SELECTORS.code).first().fill(code);
+  const submit = page.locator(SELECTORS.codeSubmit).first();
+  if (await submit.isVisible().catch(() => false)) await submit.click().catch(() => {});
+  else await page.keyboard.press('Enter');
+}
+
+async function verifyLoggedIn() {
+  if (isSuccessURL(page.url())) return true;
+  await page.goto(process.env.EPIC_LOGIN_URL_FOR_TESTS ? new URL('/account/personal', loginURL()).href : SUCCESS_URL, { waitUntil: 'domcontentloaded', timeout: 45000 }).catch(() => {});
+  await sleep(3000);
+  return isSuccessURL(page.url());
+}
+
 async function main() {
-  const first = await nextLine(10000);
-  const req = JSON.parse(first || 'null');
-  if (!req || !Number.isSafeInteger(req.account_id) || req.account_id <= 0 || typeof req.email !== 'string' || typeof req.password !== 'string') throw Error('bad request');
+  const req = JSON.parse(await firstLine || 'null');
+  if (!req || !Number.isSafeInteger(req.account_id) || req.account_id <= 0) throw Error('bad request');
+  const email = typeof req.email === 'string' ? req.email : '', password = typeof req.password === 'string' ? req.password : '';
   lock = await acquireProfile(req.account_id);
   const { chromium } = await import('playwright');
+  const headed = !!process.env.DISPLAY && process.env.EPIC_LOGIN_HEADLESS !== '1';
   context = await chromium.launchPersistentContext(lock.profile, {
-    headless: process.env.EPIC_LOGIN_HEADFUL !== '1', locale: 'en-US', acceptDownloads: false,
-    viewport: { width: 1280, height: 900 },
+    headless: !headed, locale: 'en-US', acceptDownloads: false, viewport: { width: W, height: H },
+    args: headed ? [`--window-size=${W},${H + 100}`] : [],
   });
   context.setDefaultTimeout(15000);
-  const page = context.pages()[0] || await context.newPage();
-  emit('logging_in');
+  context.on('page', p => { attach(p).catch(() => {}); });
+  await attach(context.pages()[0] || await context.newPage());
+  if (req.interactive) { await startStream(); emit('interactive'); } else emit('logging_in');
   await page.goto(loginURL(), { waitUntil: 'domcontentloaded', timeout: 45000 });
-  const deadline = Date.now() + 12 * 60 * 1000;
+  // Total budget ~13 min; a challenge/manual session gets 10 min of user time.
+  const deadline = Date.now() + 13 * 60 * 1000;
+  let userDeadline = req.interactive ? Date.now() + 10 * 60 * 1000 : 0;
   const done = { email: false, password: false, totp: 0, codes: 0 };
   let unknownSince = Date.now();
   while (Date.now() < deadline) {
-    await sleep(1500);
+    await sleep(1000);
+    if (control.cancel) return 'cancelled';
+    if (userDeadline && Date.now() > userDeadline) return 'timeout';
+    if (control.done) { control.done = false; if (await verifyLoggedIn()) return 'ready'; emit('not_logged_in'); continue; }
+    const live = context.pages().filter(p => !p.isClosed());
+    if (!live.includes(page) && live.length) await attach(live.at(-1));
     const state = await classify(page);
     if (state !== 'unknown') unknownSince = Date.now();
     switch (state) {
       case 'ready': return 'ready';
-      case 'captcha': return 'captcha_required';
-      case 'bad_credentials': return 'login_failed';
+      case 'captcha':
+        if (!streaming) { await startStream(); userDeadline = Date.now() + 10 * 60 * 1000; emit('challenge'); }
+        break; // the user solves it in the live view; we keep watching
+      case 'bad_credentials': if (!streaming) return 'login_failed'; break;
       case 'email':
-        if (done.email) break;
-        await page.locator(SELECTORS.email).first().fill(req.email);
-        await page.locator(SELECTORS.continue).first().click().catch(() => page.keyboard.press('Enter'));
+        if (done.email || !email) break;
+        await page.locator(SELECTORS.email).first().fill(email);
+        if (password || !streaming) await page.locator(SELECTORS.continue).first().click().catch(() => page.keyboard.press('Enter'));
         done.email = true; break;
       case 'password':
-        if (done.password) break;
-        if (!done.email && await page.locator(SELECTORS.email).first().isVisible().catch(() => false)) await page.locator(SELECTORS.email).first().fill(req.email);
-        await page.locator(SELECTORS.password).first().fill(req.password);
+        if (done.password || !password) break;
+        if (email && await page.locator(SELECTORS.email).first().isVisible().catch(() => false)) await page.locator(SELECTORS.email).first().fill(email);
+        await page.locator(SELECTORS.password).first().fill(password);
         await page.locator(SELECTORS.signIn).first().click().catch(() => page.keyboard.press('Enter'));
         done.password = true; break;
       case 'code': {
-        let code;
         if (req.totp_secret && done.totp < 2) {
-          if (done.totp) await sleep(31000); // retry once in the next 30 s window
-          code = totp(req.totp_secret); done.totp++;
-        } else {
-          if (done.codes >= 3) return 'two_factor_required';
-          emit('code_required');
-          const line = await nextLine(10 * 60 * 1000);
-          if (!line) return 'two_factor_required';
-          code = String(JSON.parse(line).code || '');
-          if (!/^[A-Za-z0-9]{4,10}$/.test(code)) return 'two_factor_required';
-          done.codes++;
+          if (done.totp) await sleep(31000);
+          done.totp++; await enterCode(totp(req.totp_secret)); emit('code_submitted'); await sleep(3000); break;
         }
-        await enterCode(page, code);
-        emit('code_submitted');
-        await sleep(3000);
+        if (done.codes >= 3) { if (!streaming) return 'two_factor_required'; break; }
+        emit('code_required');
+        const until = Date.now() + 10 * 60 * 1000;
+        // In the live view the user may also type the code directly into the page.
+        while (!codes.length && Date.now() < until && !control.cancel && !control.done) {
+          await Promise.race([new Promise(r => { codeWaiter = r; }), sleep(2000)]);
+          if (streaming && await classify(page) !== 'code') break;
+        }
+        codeWaiter = null;
+        if (control.cancel) return 'cancelled';
+        if (!codes.length) { if (Date.now() >= until) return 'timeout'; break; }
+        const code = codes.shift();
+        if (!/^[A-Za-z0-9]{4,10}$/.test(code)) break;
+        done.codes++; await enterCode(code); emit('code_submitted'); await sleep(3000);
         break;
       }
       default:
-        if (Date.now() - unknownSince > 60000) return 'error';
+        if (!streaming && Date.now() - unknownSince > 60000) { await startStream(); userDeadline = Date.now() + 10 * 60 * 1000; emit('challenge'); }
     }
   }
-  return 'error';
-}
-
-async function enterCode(page, code) {
-  const split = page.locator(SELECTORS.codeSplit);
-  if (await split.count() > 1) {
-    await split.first().click();
-    await page.keyboard.type(code, { delay: 60 });
-  } else {
-    await page.locator(SELECTORS.code).first().fill(code);
-  }
-  const submit = page.locator(SELECTORS.codeSubmit).first();
-  if (await submit.isVisible().catch(() => false)) await submit.click().catch(() => {});
-  else await page.keyboard.press('Enter');
+  return 'timeout';
 }
 
 try { emit(await main()); }

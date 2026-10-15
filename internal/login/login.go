@@ -21,6 +21,8 @@ type Credentials struct {
 	Email      string `json:"email"`
 	Password   string `json:"password"`
 	TOTPSecret string `json:"totp_secret,omitempty"`
+	// Interactive opens the live view immediately (manual login).
+	Interactive bool `json:"interactive,omitempty"`
 }
 
 type Store interface {
@@ -30,14 +32,23 @@ type Store interface {
 // Statuses the worker may report. Anything else is treated as "error".
 var Messages = map[string]string{
 	"logging_in":          "正在后台登录 Epic…",
-	"code_required":       "Epic 要求输入邮箱/短信验证码，请在控制台中提交验证码。",
+	"interactive":         "实时窗口已打开，请在弹窗中完成登录。",
+	"challenge":           "Epic 需要人机验证，请点击“去验证”在弹窗中完成。",
+	"code_required":       "Epic 已发送验证码，请点击“输入验证码”。",
 	"code_submitted":      "验证码已提交，正在等待 Epic 确认…",
+	"not_logged_in":       "尚未检测到登录成功，请在弹窗中继续完成登录。",
 	"ready":               "已登录，浏览器会话已保存。",
-	"captcha_required":    "Epic/Cloudflare 弹出了人机验证，无头浏览器无法自动完成。请按 README 手动登录一次。",
-	"two_factor_required": "Epic 要求二次验证但未提供可用的 TOTP 密钥或验证码。",
-	"login_failed":        "Epic 拒绝了邮箱或密码，请检查后重试。",
-	"error":               "登录过程出错或页面结构无法识别，请稍后重试或手动登录。",
-	"timeout":             "登录超时，请重试。",
+	"captcha_required":    "需要完成人机验证，请点击“去验证”。",
+	"two_factor_required": "需要二次验证，请点击“去验证”在弹窗中完成。",
+	"login_failed":        "Epic 拒绝了邮箱或密码，请点击“编辑”更新密码后重试。",
+	"cancelled":           "已取消登录。",
+	"error":               "登录未完成，请点击“去验证”在弹窗中手动完成。",
+	"timeout":             "超过 10 分钟未完成，已关闭浏览器。请点击“去验证”重新开始。",
+}
+
+// Interactive reports whether a status means the live view is useful right now.
+func Interactive(status string) bool {
+	return status == "interactive" || status == "challenge" || status == "code_required" || status == "not_logged_in"
 }
 
 var codeRE = regexp.MustCompile(`^[A-Za-z0-9]{4,10}$`)
@@ -46,6 +57,28 @@ type run struct {
 	stdin   io.WriteCloser
 	waiting bool
 	mu      sync.Mutex
+	frame   []byte // latest JPEG
+	subs    map[chan Event]struct{}
+}
+
+// Event is pushed to live-view subscribers: either a JPEG frame or a status.
+type Event struct {
+	Frame  []byte
+	Status string
+}
+
+func (rn *run) publish(e Event) {
+	rn.mu.Lock()
+	defer rn.mu.Unlock()
+	if e.Frame != nil {
+		rn.frame = e.Frame
+	}
+	for c := range rn.subs {
+		select {
+		case c <- e:
+		default: // slow viewer: drop frames rather than block the worker
+		}
+	}
 }
 
 type Runner struct {
@@ -86,6 +119,7 @@ func (r *Runner) Start(id int64, c Credentials) error {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	cmd := exec.CommandContext(ctx, r.Command[0], r.Command[1:]...)
 	cmd.WaitDelay = 3 * time.Second
+	configureProcess(cmd)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		r.mu.Unlock()
@@ -103,7 +137,7 @@ func (r *Runner) Start(id int64, c Credentials) error {
 		cancel()
 		return errors.New("cannot start login worker")
 	}
-	rn := &run{stdin: stdin}
+	rn := &run{stdin: stdin, subs: map[chan Event]struct{}{}}
 	r.runs[id] = rn
 	r.mu.Unlock()
 	r.set(id, "logging_in")
@@ -115,12 +149,18 @@ func (r *Runner) Start(id int64, c Credentials) error {
 		defer cancel()
 		_, _ = stdin.Write(append(payload, '\n'))
 		last := ""
-		sc := bufio.NewScanner(io.LimitReader(stdout, 1<<20))
+		sc := bufio.NewScanner(stdout)
+		sc.Buffer(make([]byte, 64<<10), 8<<20)
 		for sc.Scan() {
 			var ev struct {
 				Status string `json:"status"`
+				Frame  []byte `json:"frame"` // base64 in JSON
 			}
 			if json.Unmarshal(sc.Bytes(), &ev) != nil {
+				continue
+			}
+			if ev.Frame != nil {
+				rn.publish(Event{Frame: ev.Frame})
 				continue
 			}
 			if _, ok := Messages[ev.Status]; !ok {
@@ -131,18 +171,27 @@ func (r *Runner) Start(id int64, c Credentials) error {
 			rn.mu.Unlock()
 			last = ev.Status
 			r.set(id, ev.Status)
+			rn.publish(Event{Status: ev.Status})
 		}
 		_ = cmd.Wait()
+		killProcessGroup(cmd)
 		_ = stdin.Close()
 		final := last
 		if ctx.Err() == context.DeadlineExceeded {
 			final = "timeout"
-		} else if final == "" || final == "logging_in" || final == "code_required" || final == "code_submitted" {
+		} else if final == "" || final == "logging_in" || final == "code_submitted" || Interactive(final) {
 			final = "error"
 		}
 		if final != last {
 			r.set(id, final)
 		}
+		rn.publish(Event{Status: final})
+		rn.mu.Lock()
+		for c := range rn.subs {
+			close(c)
+		}
+		rn.subs = nil
+		rn.mu.Unlock()
 		r.mu.Lock()
 		delete(r.runs, id)
 		r.mu.Unlock()
@@ -173,6 +222,52 @@ func (r *Runner) SubmitCode(id int64, code string) error {
 	rn.waiting = false
 	r.set(id, "code_submitted")
 	return nil
+}
+
+// Subscribe returns live-view events for a running login (latest frame first).
+func (r *Runner) Subscribe(id int64) (<-chan Event, func(), bool) {
+	r.mu.Lock()
+	rn := r.runs[id]
+	r.mu.Unlock()
+	if rn == nil {
+		return nil, nil, false
+	}
+	c := make(chan Event, 8)
+	rn.mu.Lock()
+	defer rn.mu.Unlock()
+	if rn.subs == nil {
+		return nil, nil, false
+	}
+	if rn.frame != nil {
+		c <- Event{Frame: rn.frame}
+	}
+	rn.subs[c] = struct{}{}
+	return c, func() {
+		rn.mu.Lock()
+		defer rn.mu.Unlock()
+		if _, ok := rn.subs[c]; ok {
+			delete(rn.subs, c)
+			close(c)
+		}
+	}, true
+}
+
+// Send forwards a validated control message (input/done/cancel) to the worker.
+func (r *Runner) Send(id int64, msg map[string]any) error {
+	r.mu.Lock()
+	rn := r.runs[id]
+	r.mu.Unlock()
+	if rn == nil {
+		return ErrNotWaiting
+	}
+	b, err := json.Marshal(msg)
+	if err != nil {
+		return err
+	}
+	rn.mu.Lock()
+	defer rn.mu.Unlock()
+	_, err = rn.stdin.Write(append(b, '\n'))
+	return err
 }
 
 func (r *Runner) set(id int64, status string) {

@@ -44,6 +44,8 @@ type LoginRunner interface {
 	Start(int64, login.Credentials) error
 	SubmitCode(int64, string) error
 	Running(int64) bool
+	Subscribe(int64) (<-chan login.Event, func(), bool)
+	Send(int64, map[string]any) error
 }
 
 // Options enables web-user authentication and Epic credential management.
@@ -308,22 +310,31 @@ func (o *Options) apiRoutes(api *http.ServeMux) {
 			fail(w, 503, "服务器未配置 EPIC_SECRET_KEY，无法使用网页登录")
 			return
 		}
+		var opts struct {
+			Interactive bool `json:"interactive"`
+		}
+		if r.ContentLength > 0 && !decode(w, r, &opts) {
+			return
+		}
 		blob, err := o.Auth.Credentials(r.Context(), id)
 		if err != nil {
 			respond(w, nil, err)
 			return
 		}
-		if blob == nil {
-			fail(w, 400, "该账户尚未保存 Epic 邮箱和密码")
-			return
-		}
-		plain, err := o.Secrets.Open(blob, aad(id))
-		if err != nil {
-			fail(w, 500, "无法解密已保存的凭据，请重新填写密码")
-			return
-		}
 		var c login.Credentials
-		_ = json.Unmarshal(plain, &c)
+		if blob == nil && !opts.Interactive {
+			fail(w, 400, "该账户尚未保存 Epic 邮箱和密码，请点击“编辑”填写，或使用“手动登录”")
+			return
+		}
+		if blob != nil {
+			plain, err := o.Secrets.Open(blob, aad(id))
+			if err != nil {
+				fail(w, 500, "无法解密已保存的凭据，请点击“编辑”重新填写密码")
+				return
+			}
+			_ = json.Unmarshal(plain, &c)
+		}
+		c.Interactive = opts.Interactive
 		if err = o.Login.Start(id, c); errors.Is(err, login.ErrBusy) {
 			fail(w, 409, "该账户正在登录中")
 			return
@@ -333,6 +344,34 @@ func (o *Options) apiRoutes(api *http.ServeMux) {
 		}
 		w.WriteHeader(http.StatusAccepted)
 		respond(w, map[string]bool{"ok": true}, nil)
+	})
+	api.HandleFunc("POST /api/accounts/{id}/live", func(w http.ResponseWriter, r *http.Request) {
+		id, ok := positiveID(w, r)
+		if !ok || o.Login == nil {
+			return
+		}
+		var in struct {
+			Action string `json:"action"`
+		}
+		if !decode(w, r, &in) {
+			return
+		}
+		if in.Action != "done" && in.Action != "cancel" {
+			fail(w, 400, "未知操作")
+			return
+		}
+		if err := o.Login.Send(id, map[string]any{in.Action: true}); err != nil {
+			fail(w, 409, "该账户当前没有进行中的登录窗口")
+			return
+		}
+		respond(w, map[string]bool{"ok": true}, nil)
+	})
+	api.HandleFunc("GET /api/accounts/{id}/stream", func(w http.ResponseWriter, r *http.Request) {
+		id, ok := positiveID(w, r)
+		if !ok || o.Login == nil {
+			return
+		}
+		o.stream(w, r, id)
 	})
 	api.HandleFunc("POST /api/accounts/{id}/code", func(w http.ResponseWriter, r *http.Request) {
 		id, ok := positiveID(w, r)
@@ -345,7 +384,15 @@ func (o *Options) apiRoutes(api *http.ServeMux) {
 		if !decode(w, r, &in) {
 			return
 		}
-		if err := o.Login.SubmitCode(id, strings.TrimSpace(in.Code)); err != nil {
+		if err := o.Login.SubmitCode(id, strings.TrimSpace(in.Code)); errors.Is(err, login.ErrNotWaiting) && o.Login.Running(id) {
+			// Live-view logins also accept codes typed into the form.
+			if e := o.Login.Send(id, map[string]any{"code": strings.TrimSpace(in.Code)}); e == nil {
+				respond(w, map[string]bool{"ok": true}, nil)
+				return
+			}
+			fail(w, 409, "当前没有等待验证码的登录")
+			return
+		} else if err != nil {
 			fail(w, 409, "当前没有等待验证码的登录，或验证码格式不正确")
 			return
 		}

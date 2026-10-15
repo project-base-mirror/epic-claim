@@ -14,5 +14,6 @@ claimer:
 # unless enabled here or by an admin in the web UI.
 allow_registration: false
 login:
-  command: ["node", "/app/workers/epic/login-headless.mjs"]
+  # Headed Chromium on a private Xvfb display so the user can solve challenges in the live view.
+  command: ["xvfb-run", "-a", "--server-args=-screen 0 1280x960x24 -nolisten tcp", "node", "/app/workers/epic/login-headless.mjs"]
   timeout: "15m"

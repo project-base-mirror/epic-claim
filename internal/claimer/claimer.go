@@ -38,8 +38,8 @@ var statuses = map[store.ClaimStatus]string{
 	"unsupported": "Current page does not expose verified offer/checkout evidence. Adapter review is required before resuming.",
 	"claimed":     "Ownership verified after checkout.", "owned": "Already in library.",
 	"failed": "The browser could not safely complete this offer.", "unconfirmed": "Checkout outcome is unconfirmed; ownership was not verified.",
-	"login_required": "Sign in manually in this account's browser profile.", "captcha_required": "Complete the challenge manually.",
-	"two_factor_required": "Complete two-factor authentication manually.", "terms_required": "Review and accept any terms manually.",
+	"login_required": "Epic 会话已失效：请在账户管理中点击“登录 Epic”，完成后点“恢复”。", "captcha_required": "领取时遇到人机验证：请在账户管理中点击“去验证”，完成后点“恢复”。",
+	"two_factor_required": "需要二次验证：请在账户管理中点击“去验证”，完成后点“恢复”。", "terms_required": "Epic 要求接受条款：请在账户管理中点击“手动登录”，在弹窗中查看并自行决定是否接受，然后点“恢复”。",
 	"price_changed": "A final total of exactly zero could not be verified.",
 }
 

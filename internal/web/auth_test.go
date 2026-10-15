@@ -12,11 +12,22 @@ import (
 	"github.com/project-base-mirror/epic-claim/internal/store"
 )
 
-type fakeLogin struct{ started login.Credentials }
+type fakeLogin struct {
+	started login.Credentials
+	sent    []map[string]any
+}
 
 func (f *fakeLogin) Start(_ int64, c login.Credentials) error { f.started = c; return nil }
 func (f *fakeLogin) SubmitCode(int64, string) error           { return nil }
 func (f *fakeLogin) Running(int64) bool                       { return false }
+func (f *fakeLogin) Send(_ int64, m map[string]any) error     { f.sent = append(f.sent, m); return nil }
+func (f *fakeLogin) Subscribe(int64) (<-chan login.Event, func(), bool) {
+	c := make(chan login.Event, 2)
+	c <- login.Event{Frame: []byte("\xff\xd8jpeg")}
+	c <- login.Event{Status: "ready"}
+	close(c)
+	return c, func() {}, true
+}
 
 type client struct {
 	h      http.Handler

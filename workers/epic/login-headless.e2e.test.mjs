@@ -27,14 +27,14 @@ function server() {
     });
   });
 }
-async function run(creds, onStatus, start = '/login') {
+async function run(creds, onStatus, start = '/login', onFrame) {
   const srv = server(); await new Promise(r => srv.listen(0, '127.0.0.1', r));
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'epic-login-'));
   const child = spawn(process.execPath, [new URL('./login-headless.mjs', import.meta.url).pathname], {
     env: { ...process.env, EPIC_PROFILE_ROOT: root, EPIC_LOGIN_URL_FOR_TESTS: `http://127.0.0.1:${srv.address().port}${start}` }, stdio: ['pipe', 'pipe', 'ignore'] });
   child.stdin.write(JSON.stringify({ account_id: 1, ...creds }) + '\n');
   const statuses = []; let buf = '';
-  child.stdout.on('data', d => { buf += d; let i; while ((i = buf.indexOf('\n')) >= 0) { const s = JSON.parse(buf.slice(0, i)).status; buf = buf.slice(i + 1); statuses.push(s); onStatus?.(s, child); } });
+  child.stdout.on('data', d => { buf += d; let i; while ((i = buf.indexOf('\n')) >= 0) { const m = JSON.parse(buf.slice(0, i)); buf = buf.slice(i + 1); if (m.frame) { onFrame?.(); continue; } statuses.push(m.status); onStatus?.(m.status, child); } });
   await new Promise(r => child.on('exit', r));
   srv.close(); await fs.rm(root, { recursive: true, force: true });
   return statuses;
@@ -51,7 +51,32 @@ test('wrong password is reported', { skip: !hasBrowser && 'no Playwright browser
   const s = await run({ email: 'user@example.com', password: 'wrong' });
   assert.equal(s.at(-1), 'login_failed');
 });
-test('Cloudflare challenge is reported as captcha, not bypassed', { skip: !hasBrowser && 'no Playwright browser', timeout: 120000 }, async () => {
-  const s = await run({ email: 'user@example.com', password: 'right' }, undefined, '/cf');
-  assert.equal(s.at(-1), 'captcha_required');
+test('Cloudflare challenge opens the live view and waits for the user (no bypass)', { skip: !hasBrowser && 'no Playwright browser', timeout: 120000 }, async () => {
+  let frames = 0;
+  const s = await run({ email: 'user@example.com', password: 'right' }, (st, child) => { if (st === 'challenge') setTimeout(() => child.stdin.write('{"cancel":true}\n'), 2500); }, '/cf', () => frames++);
+  assert.ok(s.includes('challenge'));
+  assert.equal(s.at(-1), 'cancelled');
+  assert.ok(frames > 0, 'live frames streamed');
+});
+test('manual (interactive) login: user types into the live view, then 我已完成', { skip: !hasBrowser && 'no Playwright browser', timeout: 120000 }, async () => {
+  let frames = 0;
+  const s = await run({ interactive: true }, async (st, child) => {
+    if (st !== 'interactive') return;
+    const send = m => child.stdin.write(JSON.stringify(m) + '\n');
+    await new Promise(r => setTimeout(r, 2500));
+    // Email field of the fake page sits at the top-left; click it and type.
+    send({ input: { type: 'click', x: 20, y: 18 } });
+    send({ input: { type: 'text', text: 'user@example.com' } });
+    send({ input: { type: 'key', key: 'Enter' } });
+    await new Promise(r => setTimeout(r, 2000));
+    send({ input: { type: 'click', x: 20, y: 18 } });
+    send({ input: { type: 'text', text: 'right' } });
+    send({ input: { type: 'key', key: 'Enter' } });
+    await new Promise(r => setTimeout(r, 2000));
+    send({ input: { type: 'click', x: 20, y: 18 } });
+    send({ input: { type: 'text', text: '424242' } });
+    send({ input: { type: 'key', key: 'Enter' } });
+  }, '/login', () => frames++);
+  assert.equal(s.at(-1), 'ready');
+  assert.ok(frames > 0);
 });

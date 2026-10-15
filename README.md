@@ -25,9 +25,9 @@ Go 管理服务 + Node/Playwright 领取 Worker，保留原仓库的轻量混合
 5. 状态为“会话就绪”后，点击“立即检查”或在“计划设置”中启用定时检查。
 6. 管理员可在“系统设置”中开启/关闭新用户注册。
 
-### 遇到 captcha 时：手动登录（后备方案）
+### 后备方案：在桌面电脑登录后导入浏览器配置（仅当网页实时窗口不可用时）
 
-无头浏览器无法也不会自动处理人机验证。**2026-10-15 在 31.200 的容器内实测：直接打开 Epic 登录页即被 Cloudflare “Just a moment / One more step” 安全检查拦截（直连和经 7890 代理都会出现），因此网页登录目前大概率显示“需要验证码”。** 此时需在有图形界面的电脑上手动登录一次，再把浏览器配置拷进容器卷，会话之后会被复用：
+程序不会自动破解人机验证。2026-10-15 实测：容器内无头 Chromium 打开 Epic 登录页会被 Cloudflare 安全检查拦截，因此默认改为 Xvfb 有界面浏览器 + 网页实时窗口由用户完成验证。若实时窗口无法使用，可在有图形界面的电脑上登录一次，再把浏览器配置拷进容器卷：
 
 ```bash
 # 1) 在有桌面的 Linux 电脑上（本仓库、Node 22、npx playwright install chromium 已就绪）
@@ -81,6 +81,10 @@ location / {
     proxy_set_header X-Real-IP $remote_addr;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto https;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection $connection_upgrade;   # 需在 http{} 中定义 map
+    proxy_read_timeout 900s;
 }
 ```
 
@@ -107,7 +111,7 @@ location / {
 
 - GET /api/status, /api/accounts, /api/history, /api/freegames, /api/settings
 - POST /api/accounts；PUT /api/accounts/{id}，JSON `{ "name": "账号", "disabled": false, "email": "", "password": "", "totp_secret": "", "clear_credentials": false }`
-- POST /api/accounts/{id}/login（启动无头登录）；POST /api/accounts/{id}/code，JSON `{ "code": "123456" }`
+- POST /api/accounts/{id}/login，JSON 可选 `{ "interactive": true }`（启动登录 / 手动登录）；GET /api/accounts/{id}/stream?csrf=…（WebSocket 实时画面）；POST /api/accounts/{id}/live，JSON `{ "action": "done" | "cancel" }`；POST /api/accounts/{id}/code，JSON `{ "code": "123456" }`
 - PUT /api/settings，JSON `{ "allow_registration": false }`（仅管理员）
 - POST /api/trigger；POST /api/jobs/{id}/retry 或 /resume
 - PUT /api/schedule，JSON `{ "enabled": true, "interval_seconds": 3600 }`
