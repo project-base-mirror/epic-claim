@@ -51,7 +51,7 @@ ws.onmessage=e=>{if(liveID!==id)return;if(typeof e.data==='string'){let m;try{m=
 ws.onclose=()=>{if(liveWS!==ws||liveID!==id)return;liveWS=null;if(!got&&tries<15){setTimeout(()=>connectLive(tries+1),1000);return}if(!$('live-done').disabled)liveStatus('实时窗口已断开。如果登录尚未完成，请关闭后重新点击“去验证”。',true)}}
 function closeLive(){const ws=liveWS;liveWS=null;liveID=0;ws?.close();clearInterval(liveTimer);if(liveURL){URL.revokeObjectURL(liveURL);liveURL=''}if($('live-dialog').open)$('live-dialog').close()}
 function sendInput(m){if(liveWS?.readyState===1)liveWS.send(JSON.stringify(m))}
-function point(e){const img=$('live-view'),r=img.getBoundingClientRect();return{x:Math.round((e.clientX-r.left)/r.width*(img.naturalWidth||1280)),y:Math.round((e.clientY-r.top)/r.height*(img.naturalHeight||860))}}
+function point(e){const img=$('live-view'),r=img.getBoundingClientRect();return{x:Math.round((e.clientX-r.left)/r.width*1280),y:Math.round((e.clientY-r.top)/r.height*860)}}
 const view=$('live-view');
 view.addEventListener('mousedown',e=>{e.preventDefault();view.focus();sendInput({type:'down',...point(e)})});
 view.addEventListener('mouseup',e=>{e.preventDefault();sendInput({type:'up',...point(e)})});
