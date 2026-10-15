@@ -17,7 +17,14 @@ type Config struct {
 	Country  string `yaml:"country"`
 	// EpicEndpoint overrides the freeGamesPromotions API URL.
 	EpicEndpoint string `yaml:"epic_endpoint"`
-	Schedule     struct {
+	// AllowRegistration is the default for opening web registration after the
+	// first (admin) user exists. Admins can change it in the web UI.
+	AllowRegistration bool `yaml:"allow_registration"`
+	Login             struct {
+		Command []string      `yaml:"command"`
+		Timeout time.Duration `yaml:"timeout"`
+	} `yaml:"login"`
+	Schedule struct {
 		CheckInterval time.Duration `yaml:"check_interval"`
 		AccountDelay  time.Duration `yaml:"account_delay"`
 	} `yaml:"schedule"`
@@ -35,6 +42,8 @@ func Load(path string) (*Config, error) {
 	c.Claimer.Type = "exec"
 	c.Claimer.Command = []string{"node", "workers/epic/worker.mjs"}
 	c.Claimer.Timeout = 5 * time.Minute
+	c.Login.Command = []string{"node", "workers/epic/login-headless.mjs"}
+	c.Login.Timeout = 15 * time.Minute
 	b, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
 		return nil, err
@@ -60,6 +69,9 @@ func Load(path string) (*Config, error) {
 	}
 	if c.Claimer.Type != "exec" || len(c.Claimer.Command) == 0 || c.Claimer.Timeout < time.Second || c.Claimer.Timeout > 30*time.Minute {
 		return nil, fmt.Errorf("configure an exec worker with timeout between 1s and 30m")
+	}
+	if len(c.Login.Command) == 0 || c.Login.Timeout < time.Minute || c.Login.Timeout > time.Hour {
+		return nil, fmt.Errorf("login worker needs a command and a timeout between 1m and 1h")
 	}
 	return c, nil
 }

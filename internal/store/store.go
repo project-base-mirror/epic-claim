@@ -42,6 +42,10 @@ type Account struct {
 	Name          string    `json:"name"`
 	Disabled      bool      `json:"disabled"`
 	SessionStatus string    `json:"session_status"`
+	HasCreds      bool      `json:"has_credentials"`
+	EmailHint     string    `json:"email_hint"`
+	LoginMessage  string    `json:"login_message"`
+	LoginRunning  bool      `json:"login_running"`
 	UpdatedAt     time.Time `json:"updated_at"`
 }
 type Job struct {
@@ -100,6 +104,10 @@ func OpenSQLite(path string, initialInterval ...time.Duration) (*SQLite, error) 
 		s.Close()
 		return nil, err
 	}
+	if err = s.migrate(); err != nil {
+		s.Close()
+		return nil, err
+	}
 	interval := int64(3600)
 	if len(initialInterval) > 0 && initialInterval[0] >= time.Minute && initialInterval[0] <= 7*24*time.Hour {
 		interval = int64(initialInterval[0] / time.Second)
@@ -133,7 +141,7 @@ func (s *SQLite) Close() error {
 	return err
 }
 func (s *SQLite) ListAccounts(ctx context.Context) ([]Account, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,name,disabled,session_status,updated_at FROM accounts ORDER BY id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id,name,disabled,session_status,updated_at,credentials IS NOT NULL,email_hint,login_message FROM accounts ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -142,7 +150,7 @@ func (s *SQLite) ListAccounts(ctx context.Context) ([]Account, error) {
 	for rows.Next() {
 		var a Account
 		var t string
-		if err = rows.Scan(&a.ID, &a.Name, &a.Disabled, &a.SessionStatus, &t); err != nil {
+		if err = rows.Scan(&a.ID, &a.Name, &a.Disabled, &a.SessionStatus, &t, &a.HasCreds, &a.EmailHint, &a.LoginMessage); err != nil {
 			return nil, err
 		}
 		a.UpdatedAt = parse(t)

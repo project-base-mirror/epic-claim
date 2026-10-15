@@ -11,3 +11,7 @@ claimer:
   type: "exec"
   command: ["node", "workers/epic/worker.mjs"]
   timeout: "5m"
+allow_registration: false # first web user becomes admin; later users only when enabled
+login:
+  command: ["node", "workers/epic/login-headless.mjs"]
+  timeout: "15m"

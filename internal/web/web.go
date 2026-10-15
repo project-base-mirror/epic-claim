@@ -34,7 +34,11 @@ type Service interface {
 	FreeGames(context.Context) ([]epic.Game, error)
 }
 
-func New(addr string, service Service, adminToken string) *http.Server {
+func New(addr string, service Service, adminToken string, options ...Options) *http.Server {
+	var opt *Options
+	if len(options) > 0 && options[0].Auth != nil {
+		opt = &options[0]
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -45,11 +49,23 @@ func New(addr string, service Service, adminToken string) *http.Server {
 		v, e := service.GetSchedule(r.Context())
 		respond(w, map[string]any{"schedule": v}, e)
 	})
-	api.HandleFunc("GET /api/accounts", func(w http.ResponseWriter, r *http.Request) { v, e := service.Accounts(r.Context()); respond(w, v, e) })
+	api.HandleFunc("GET /api/accounts", func(w http.ResponseWriter, r *http.Request) {
+		v, e := service.Accounts(r.Context())
+		if opt != nil && opt.Login != nil {
+			for i := range v {
+				v[i].LoginRunning = opt.Login.Running(v[i].ID)
+			}
+		}
+		respond(w, v, e)
+	})
 	save := func(w http.ResponseWriter, r *http.Request) {
 		var in struct {
 			Name     string `json:"name"`
 			Disabled bool   `json:"disabled"`
+			Email    string `json:"email"`
+			Password string `json:"password"`
+			TOTP     string `json:"totp_secret"`
+			Clear    bool   `json:"clear_credentials"`
 		}
 		if !decode(w, r, &in) {
 			return
@@ -67,7 +83,29 @@ func New(addr string, service Service, adminToken string) *http.Server {
 				return
 			}
 		}
+		hasCreds := in.Email != "" || in.Password != "" || in.TOTP != "" || in.Clear
+		if hasCreds && opt == nil {
+			fail(w, 400, "此服务未启用网页凭据管理")
+			return
+		}
+		if hasCreds && !in.Clear && opt.Secrets == nil {
+			fail(w, 503, "服务器未配置 EPIC_SECRET_KEY，无法保存 Epic 凭据")
+			return
+		}
 		v, e := service.SaveAccount(r.Context(), store.Account{ID: id, Name: in.Name, Disabled: in.Disabled})
+		if e == nil && hasCreds {
+			if code, msg := opt.saveCredentials(r.Context(), v.ID, in.Email, in.Password, in.TOTP, in.Clear); code != 0 {
+				fail(w, code, msg+(map[bool]string{true: "（账户名称已保存）", false: ""}[id == 0]))
+				return
+			}
+			if list, err := service.Accounts(r.Context()); err == nil {
+				for _, a := range list {
+					if a.ID == v.ID {
+						v = a
+					}
+				}
+			}
+		}
 		respond(w, v, e)
 	}
 	api.HandleFunc("POST /api/accounts", save)
@@ -104,21 +142,43 @@ func New(addr string, service Service, adminToken string) *http.Server {
 		}
 		respond(w, map[string]bool{"ok": true}, service.SetSchedule(r.Context(), store.Schedule{Enabled: in.Enabled, IntervalSeconds: in.IntervalSeconds}))
 	})
+	if opt != nil {
+		opt.apiRoutes(api)
+		opt.routes(mux)
+	}
 	expected := sha256.Sum256([]byte(adminToken))
 	mux.Handle("/api/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
-		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		got := sha256.Sum256([]byte(token))
-		if adminToken == "" || !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") || subtle.ConstantTimeCompare(got[:], expected[:]) != 1 {
-			w.Header().Set("WWW-Authenticate", "Bearer")
-			fail(w, 401, "管理员令牌无效或未配置")
-			return
-		}
 		if r.Header.Get("Sec-Fetch-Site") == "cross-site" {
 			fail(w, 403, "不允许跨站请求")
 			return
 		}
-		api.ServeHTTP(w, r)
+		var p *principal
+		if auth := r.Header.Get("Authorization"); auth != "" {
+			// Optional API token for scripts. Not cookie-based, so no CSRF token needed.
+			got := sha256.Sum256([]byte(strings.TrimPrefix(auth, "Bearer ")))
+			if adminToken == "" || !strings.HasPrefix(auth, "Bearer ") || subtle.ConstantTimeCompare(got[:], expected[:]) != 1 {
+				w.Header().Set("WWW-Authenticate", "Bearer")
+				fail(w, 401, "API 令牌无效或未配置")
+				return
+			}
+			p = &principal{user: store.User{Username: "api-token", IsAdmin: true}, token: true}
+		} else if opt != nil {
+			p = opt.session(r)
+			if p == nil {
+				fail(w, 401, "请先登录")
+				return
+			}
+			if r.Method != http.MethodGet && r.Method != http.MethodHead && subtle.ConstantTimeCompare([]byte(r.Header.Get("X-CSRF-Token")), []byte(p.csrf)) != 1 {
+				fail(w, 403, "CSRF 校验失败，请刷新页面")
+				return
+			}
+		} else {
+			w.Header().Set("WWW-Authenticate", "Bearer")
+			fail(w, 401, "管理员令牌无效或未配置")
+			return
+		}
+		api.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ctxKey{}, p)))
 	}))
 	sub, _ := fs.Sub(assets, "static")
 	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
