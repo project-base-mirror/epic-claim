@@ -131,3 +131,7 @@ financial row must have exactly one plain label and one dedicated amount element
 `.payment-order-summary__order-tax-amount`. Generic item-level Total/Tax labels
 are never used as order-level amounts. Extra order-level rows, duplicate financial
 regions, unidentified amounts and additional amount-due text require review.
+
+## 网页驱动的无头登录（login-headless.mjs）
+
+由 Go 服务在用户点击“登录 Epic”时启动，凭据只通过 stdin 传入（不出现在 argv、环境变量或日志中）。协议为 JSON 行：stdin 第一行是账户编号/邮箱/密码/TOTP，之后可能收到 `{"code":"…"}`；stdout 输出 `logging_in`、`code_required`、`code_submitted`、`ready`、`captcha_required`、`two_factor_required`、`login_failed`、`error` 等状态。页面识别逻辑在 `login-flow.mjs`，选择器基于 Epic 公开登录页的常见结构，**未用真实账号验证**；无法识别的页面 60 秒后以 `error` 结束，出现人机验证时以 `captcha_required` 结束，不做任何规避。与领取 Worker 共用同一 profile 锁，因此同一账户不会同时登录和领取。

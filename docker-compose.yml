@@ -6,7 +6,10 @@ services:
     ports:
       - "127.0.0.1:8080:8080"
     environment:
-      EPIC_ADMIN_TOKEN: "${EPIC_ADMIN_TOKEN:?Set a private admin token of at least 32 characters}"
+      # Optional API token for scripts (>= 32 chars). People log in with username/password.
+      EPIC_ADMIN_TOKEN: "${EPIC_ADMIN_TOKEN:-}"
+      # Required: AES-256-GCM key for stored Epic credentials. Generate with: openssl rand -base64 32
+      EPIC_SECRET_KEY: "${EPIC_SECRET_KEY:?Set EPIC_SECRET_KEY in .env (openssl rand -base64 32)}"
       EPIC_PROFILE_ROOT: /data/profiles
     volumes:
       - ./config.docker.yaml:/app/config.yaml:ro

@@ -2,20 +2,43 @@
 
 Go 管理服务 + Node/Playwright 领取 Worker，保留原仓库的轻量混合架构。支持多账号标签、免费游戏发现、持久化队列、自动检查和中文管理后台。
 
-**验证边界：管理后台和队列已通过离线测试；浏览器适配器仍是实验实现：2026-10-14 已只读验证一个公开商品页的身份提取，但登录后的结账结构尚未验证。未知页面会返回 unsupported 等待适配验证，可能无法自动领取任何真实游戏，不能当作已验证可用的自动领取服务。没有使用真实 Epic 账号验证登录或领取，也没有实际 Docker 部署。**
+**验证边界（2026-10-15）：控制台账号体系、凭据加密、登录 Worker 的状态机/验证码转交已通过离线测试和本地假登录页端到端测试；登录 Worker 尚未用真实 Epic 账号验证。Epic 对无头浏览器经常弹出人机验证（captcha），这种情况无法自动完成，只能按下文“手动登录”处理。领取适配器仍是实验实现：登录后的结账结构尚未验证，未知页面返回 unsupported。**
 
 ## 已实现
 
-- 中文响应式后台：账号启停、会话状态、免费游戏、任务历史、手动触发、重试、明确恢复、定时间隔
-- 所有管理 API 使用 Bearer 管理令牌；页面不收集 Epic 密码、验证码、TOTP 或 cookies
-- SQLite 持久化账号、任务和调度设置；账号 + namespace + offer 唯一去重
-- 定时和手动共用队列；单进程/单数据库锁；单 Worker 执行，避免同账号并发
-- 真实 Playwright 浏览器适配器：检查当前活动、当前拥有状态、订单身份、最终数值总价与税额，提交后重新验证拥有状态
-- CAPTCHA、2FA、登录、条款和价格检查失败均停下等待操作；不会自动解题、规避检测或接受协议
-- 意外重启、超时或下单结果不明记为 unconfirmed，明确恢复前不再次下单
-- 明确的下单前失败最多尝试 3 次，1/2 分钟退避；人工阻塞状态不会自动重试
+- 控制台用户：用户名 + 密码注册/登录（bcrypt），HttpOnly + SameSite=Strict 会话 Cookie（经 HTTPS 反代访问时带 Secure），写操作需 CSRF 令牌，登录失败限速
+- 第一个注册的用户自动成为管理员；之后注册默认关闭（配置 `allow_registration`，管理员可在“系统设置”中开启）
+- 在网页中添加 Epic 账户：Epic 邮箱 + 密码 + 可选 TOTP 密钥，使用 AES-256-GCM 加密保存（密钥来自环境变量 `EPIC_SECRET_KEY`，绝不入库/提交），页面只显示脱敏邮箱
+- 点击“登录 Epic”：容器内 Playwright 无头登录，每个账户独立持久化浏览器配置；有 TOTP 密钥时自动填写 2FA；Epic 要求邮箱验证码时状态变为“需要输入验证码”，在网页输入后由 Worker 提交
+- 可选的 `EPIC_ADMIN_TOKEN` 继续作为脚本用 API 令牌（`Authorization: Bearer`）
+- 免费游戏发现、持久化队列、手动/定时检查、重试、明确恢复；结果不明不重复下单
+- CAPTCHA、条款、价格检查失败均停下等待处理；不会自动解题、规避检测或接受协议
 
-通知、HTTP Worker、密码/TOTP 加密托管、代理和多副本部署尚未实现。原来的通知文件是未接入的占位接口，不会发送通知。
+通知、HTTP Worker、多副本部署尚未实现。
+
+## 使用流程
+
+1. 打开控制台（例如 https://epic.lan.policoil.top）。系统还没有用户时显示注册页：**第一个注册的账号就是管理员**。注册后自动登录。
+2. “账户管理” → “添加账户”：填写名称、Epic 邮箱、Epic 密码，若账号开启了“身份验证器应用”2FA，可填写其 Base32 密钥（TOTP）。保存后密码不会再显示；修改凭据需重新输入密码；可勾选“删除已保存的 Epic 凭据”。
+3. 点击该账户的“登录 Epic”。状态依次为：登录中 → 会话就绪 / 需要输入验证码 / 需要验证码（captcha）/ 邮箱或密码错误 / 登录超时。
+4. 状态为“需要输入验证码”时，点击“输入验证码”，填入 Epic 发到邮箱的验证码（10 分钟内）。
+5. 状态为“会话就绪”后，点击“立即检查”或在“计划设置”中启用定时检查。
+6. 管理员可在“系统设置”中开启/关闭新用户注册。
+
+### 遇到 captcha 时：手动登录（后备方案）
+
+无头浏览器无法也不会自动处理人机验证。此时需要在有图形界面的环境中用同一个浏览器配置目录手动登录一次，会话之后会被复用：
+
+```bash
+# 在部署主机上（需要图形桌面或 X 转发），停止容器以释放配置锁
+docker compose stop
+# 数据卷中的 profiles 目录挂到本机，例如：
+EPIC_PROFILE_ROOT=/var/lib/docker/volumes/epic-claim_epic-data/_data/profiles node workers/epic/login.mjs <账户编号>
+# 手动登录、完成验证后关闭窗口；确认目录属主仍为容器内 pwuser（uid 1001）
+docker compose start
+```
+
+或者在本地 Linux 桌面以“本地运行”模式完成登录后再把对应 `account-N` 目录复制到卷中。不要把密码、验证码、cookies 或配置目录发给他人。
 
 ## 本地运行（Linux）
 
@@ -25,37 +48,38 @@ Go 管理服务 + Node/Playwright 领取 Worker，保留原仓库的轻量混合
 cp config.example.yaml config.yaml
 npm --prefix workers/epic ci --ignore-scripts
 cd workers/epic && npx playwright install --with-deps chromium && cd ../..
-export EPIC_ADMIN_TOKEN='替换成至少32字符的随机私密管理令牌'
+export EPIC_SECRET_KEY="$(openssl rand -base64 32)"   # 请自行持久保存；丢失后需重新填写所有 Epic 密码
 export EPIC_PROFILE_ROOT="$PWD/data/profiles"
 go run ./cmd/epic-claim -config config.yaml
 ```
 
-打开 http://127.0.0.1:8080，输入管理令牌。令牌只保存在当前浏览器标签页的 sessionStorage，退出后台会清除。后台默认仅绑定本机；不要在明文公网 HTTP 上传输令牌。远程访问应使用自己的 HTTPS 反向代理或安全隧道。
-
-1. 在配置中设置账号实际商店地区；目录 locale 必须为 en-US，Worker 固定英文以匹配明确按钮；后台仍为中文。
-2. 后台添加账号标签，记下编号。每个账号对应隔离的浏览器配置文件。标签不是 Epic 身份验证：系统尚未绑定或核对 Epic account ID，用户必须在每个配置文件内确认登录的是预期账号。
-3. 在同一台 Linux 机器的图形桌面，以相同系统用户和 EPIC_PROFILE_ROOT 运行下面的人工会话入口。
-4. 用户自己登录和处理挑战或协议，完成后关闭窗口，再在后台触发检查/恢复。
-5. 首次运行定时检查关闭。确认账号状态后，在后台明确启用；保存后的调度配置位于 SQLite，重启不会丢失。
-
-```bash
-node workers/epic/login.mjs 1
-```
-
-该命令只打开浏览器，登录和挑战由用户完成。不要把密码、验证码、cookies、浏览器配置或令牌发给 AI。配置文件包含登录会话，应按凭据保护。
+打开 http://127.0.0.1:8080 注册第一个（管理员）账号。后台默认仅绑定本机；远程访问请经 HTTPS 反向代理（会话 Cookie 会自动带 Secure，需代理设置 `X-Forwarded-Proto: https`）。
 
 ## Docker
 
 ```bash
 # 编辑 config.docker.yaml，将 country 改为实际地区
-export EPIC_ADMIN_TOKEN='替换成至少32字符的随机私密管理令牌'
-docker compose build
-docker compose up -d
+cat >> .env <<EOT
+EPIC_SECRET_KEY=$(openssl rand -base64 32)
+EOT
+chmod 600 .env
+docker compose up -d --build
 ```
 
-仅发布 127.0.0.1:8080；数据库和会话位于 epic-data 私有卷，容器使用非 root 用户。Playwright 镜像与 npm 包必须保持相同版本。使用 Linux 单实例运行，不支持共享数据库多副本。生产部署前自行审查镜像更新、安全策略和 Epic 服务条款。
+`.env` 已在 .gitignore 中，切勿提交。`EPIC_ADMIN_TOKEN`（可选，≥32 字符）只用于脚本调用 API。仅发布 127.0.0.1:8080；数据库、加密凭据和浏览器配置位于 epic-data 私有卷，容器使用非 root 用户。更换 `EPIC_SECRET_KEY` 会导致已保存凭据无法解密，需要在网页重新填写。
 
-**无头容器本身没有人工登录图形界面。** 在与卷相同的 Linux 主机上，通过受保护的本地图形会话执行 Worker 登录工具，或先在同一可信环境准备对应配置目录后挂载。不要公开 VNC/调试端口，不要把 profile 打包进镜像或提交到 Git。挂载的私有卷需要 pwuser 可读写。未提供自动远程登录界面；如果没有可信图形会话，请先使用本地 Linux 模式。
+### Nginx 反代示例
+
+```nginx
+location / {
+    allow 192.168.31.0/24; allow 127.0.0.1; allow 100.64.0.0/10; deny all;
+    proxy_pass http://127.0.0.1:18080;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto https;
+}
+```
 
 ## 状态与恢复
 
@@ -64,7 +88,9 @@ docker compose up -d
 | pending / running | 排队 / 正在执行 |
 | claimed / owned | 已重新验证拥有 / 执行前已拥有，不会重复领取 |
 | failed | 明确失败，自动重试耗尽后可点“重试” |
-| login_required / two_factor_required / captcha_required | 打开人工会话入口完成对应操作，再点“恢复” |
+| 账户：logging_in / code_required / code_submitted | 登录中 / 等待在网页输入验证码 / 已提交等待确认 |
+| 账户：login_failed / timeout / error | 检查邮箱密码后重试“登录 Epic”；页面无法识别时改用手动登录 |
+| login_required / two_factor_required / captcha_required | 在账户管理中重新“登录 Epic”；captcha 需手动登录，再点“恢复” |
 | terms_required | 用户自行审阅并决定是否接受；程序不代为接受，再明确恢复 |
 | unsupported | 页面未提供已验证的精确商品/订单身份结构；需要开发者更新并验证适配器，不能靠重复恢复解决 |
 | price_changed | 未能确认最终零金额或活动到期；核查活动，不要强行继续 |
@@ -74,15 +100,16 @@ docker compose up -d
 
 ## 接口
 
-`GET /healthz` 无需令牌，仅用于存活探测。以下均需要 `Authorization: Bearer <token>`：
+`GET /healthz` 无需登录。网页使用 `/auth/state`、`POST /auth/register`、`/auth/login`、`/auth/logout`。`/api/*` 接受会话 Cookie（写操作需 `X-CSRF-Token`，值来自 `/auth/state`）或 `Authorization: Bearer <EPIC_ADMIN_TOKEN>`：
 
-- GET /api/status, /api/accounts, /api/history, /api/freegames
-- POST /api/accounts；PUT /api/accounts/{id}，JSON `{ "name": "账号", "disabled": false }`
-- POST /api/trigger
-- POST /api/jobs/{id}/retry 或 /resume
+- GET /api/status, /api/accounts, /api/history, /api/freegames, /api/settings
+- POST /api/accounts；PUT /api/accounts/{id}，JSON `{ "name": "账号", "disabled": false, "email": "", "password": "", "totp_secret": "", "clear_credentials": false }`
+- POST /api/accounts/{id}/login（启动无头登录）；POST /api/accounts/{id}/code，JSON `{ "code": "123456" }`
+- PUT /api/settings，JSON `{ "allow_registration": false }`（仅管理员）
+- POST /api/trigger；POST /api/jobs/{id}/retry 或 /resume
 - PUT /api/schedule，JSON `{ "enabled": true, "interval_seconds": 3600 }`
 
-API 不返回任何登录会话或令牌。请求严格校验 JSON；后台使用同源 CSP 和转义文本。
+API 不返回密码、TOTP、会话或 cookies。
 
 ## 测试
 
@@ -93,7 +120,7 @@ go vet ./...
 npm --prefix workers/epic test
 ```
 
-测试不登录 Epic、不领取真实游戏、不使用真实凭据。Worker 具体安全设计、页面适配边界和人工登录见 [workers/epic/README.md](workers/epic/README.md)。
+测试不登录 Epic、不领取真实游戏、不使用真实凭据；`login-headless.e2e.test.mjs` 针对本地假登录页（需要 Playwright Chromium，否则跳过）。Worker 具体安全设计、页面适配边界和人工登录见 [workers/epic/README.md](workers/epic/README.md)。
 
 ## 运维与免责声明
 
