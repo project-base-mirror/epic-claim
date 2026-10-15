@@ -55,7 +55,10 @@ func main() {
 	sch := &scheduler.Scheduler{Epic: ec, Store: st, Claimer: &claimer.Exec{Command: cfg.Claimer.Command, Timeout: cfg.Claimer.Timeout}, AccountDelay: cfg.Schedule.AccountDelay}
 	done := make(chan struct{})
 	go func() { defer close(done); sch.Run(ctx) }()
-	runner := &login.Runner{Command: cfg.Login.Command, Timeout: cfg.Login.Timeout, Store: st}
+	runner := &login.Runner{Command: cfg.Login.Command, Timeout: cfg.Login.Timeout, Store: st, ClaimMessage: func(s string) (string, bool) {
+		m, ok := claimer.Statuses[store.ClaimStatus(s)]
+		return m, ok
+	}}
 	srv := web.New(cfg.Listen, sch, token, web.Options{Auth: st, Secrets: box, Login: runner, AllowRegistrationDefault: cfg.AllowRegistration})
 	go func() {
 		log.Printf("admin listening on %s", cfg.Listen)

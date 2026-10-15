@@ -34,14 +34,20 @@ type Exec struct {
 	MaxOutputBytes int64
 }
 
-var statuses = map[store.ClaimStatus]string{
-	"unsupported": "Current page does not expose verified offer/checkout evidence. Adapter review is required before resuming.",
-	"claimed":     "Ownership verified after checkout.", "owned": "Already in library.",
-	"failed": "The browser could not safely complete this offer.", "unconfirmed": "Checkout outcome is unconfirmed; ownership was not verified.",
-	"login_required": "Epic 会话已失效：请在账户管理中点击“登录 Epic”，完成后点“恢复”。", "captcha_required": "领取时遇到人机验证：请在账户管理中点击“去验证”，完成后点“恢复”。",
-	"two_factor_required": "需要二次验证：请在账户管理中点击“去验证”，完成后点“恢复”。", "terms_required": "Epic 要求接受条款：请在账户管理中点击“手动登录”，在弹窗中查看并自行决定是否接受，然后点“恢复”。",
-	"price_changed": "A final total of exactly zero could not be verified.",
+// Statuses is the Chinese, actionable message for each worker outcome.
+var Statuses = map[store.ClaimStatus]string{
+	"unsupported":         "商店页面结构无法识别，未提交任何订单。请在账户管理点击“去验证”，在弹窗中查看并手动领取。",
+	"claimed":             "领取成功，已确认在库中。",
+	"owned":               "已在库中，无需领取。",
+	"failed":              "浏览器未能安全完成操作（未下单），会自动重试。",
+	"unconfirmed":         "已点击下单但未能确认结果，请到 Epic 游戏库核对后再点“恢复”。",
+	"login_required":      "Epic 登录已失效：请在账户管理点击“去验证”重新登录，登录后会自动领取。",
+	"captcha_required":    "需要你完成验证才能领取：请在账户管理点击“去验证”，在弹窗中完成验证后会自动继续领取。",
+	"two_factor_required": "需要二次验证：请在账户管理点击“去验证”。",
+	"terms_required":      "Epic 要求同意条款：请点击“去验证”，在弹窗中自行确认后会继续领取。",
+	"price_changed":       "价格不是 0 或需要付款方式，已停止，未下单。",
 }
+var statuses = Statuses
 
 // Claim never returns partial results. Invalid output and process errors are
 // intentionally generic: browser diagnostics may contain credentials or tokens.

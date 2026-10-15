@@ -4,6 +4,9 @@
 // grabbing the X framebuffer (ffmpeg x11grab) and driven by X input (xdotool).
 // The user solves any challenge themselves; nothing here solves captchas.
 import { spawn } from 'node:child_process';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import * as cdp from './cdp.mjs';
 
 export const SCREEN = { w: 1280, h: 960 };
 const XKEYS = { Enter: 'Return', Backspace: 'BackSpace', Tab: 'Tab', Escape: 'Escape', Delete: 'Delete', ArrowLeft: 'Left', ArrowRight: 'Right', ArrowUp: 'Up', ArrowDown: 'Down', Home: 'Home', End: 'End', PageUp: 'Prior', PageDown: 'Next', ' ': 'space' };
@@ -16,6 +19,9 @@ export function browserArgs(profile, url, env = process.env) {
     // Containers have no user namespaces for Chromium's sandbox (same as Playwright's default);
     // --test-type only hides the resulting "unsupported flag" infobar. Pages cannot observe either.
     '--no-sandbox', '--test-type',
+    // Local-only DevTools endpoint for reading page state/cookies (port picked by Chromium,
+    // written to <profile>/DevToolsActivePort). Never exposed outside the container.
+    '--remote-debugging-address=127.0.0.1', '--remote-debugging-port=0',
   ];
   const proxy = env.EPIC_BROWSER_PROXY || '';
   if (proxy === 'direct') args.push('--no-proxy-server');
@@ -70,13 +76,53 @@ export function xdotoolCommands(i) {
 
 export class PlainBrowser {
   constructor({ executable, profile, url, onFrame }) { Object.assign(this, { executable, profile, url, onFrame }); this.queue = Promise.resolve(); }
-  start() {
+  // Epic's login cookie (EPIC_SESSION_AP …) is a session cookie that Chromium does not
+  // write to disk. We keep the account's cookies in <profile>/epic-session.json (0600,
+  // same sensitivity as the profile itself) and restore them on the next launch.
+  get sessionFile() { return path.join(this.profile, 'epic-session.json'); }
+  async saveSession() {
+    try {
+      const port = await cdp.devtoolsPort(this.profile, 3000);
+      const { cookies } = await cdp.call(await cdp.browserWs(port), 'Storage.getCookies');
+      const keep = cookies.filter(c => /(^|\.)epicgames\.com$/.test(c.domain.replace(/^\./, '')) || /epicgames\.com$/.test(c.domain));
+      await fs.writeFile(this.sessionFile, JSON.stringify(keep), { mode: 0o600 });
+      return keep.length;
+    } catch { return 0; }
+  }
+  async restoreSession() {
+    try {
+      const saved = JSON.parse(await fs.readFile(this.sessionFile, 'utf8'));
+      if (!Array.isArray(saved) || !saved.length) return 0;
+      const port = await cdp.devtoolsPort(this.profile);
+      const cookies = saved.map(({ name, value, domain, path, secure, httpOnly, sameSite, expires }) => ({ name, value, domain, path, secure, httpOnly, sameSite, ...(expires > 0 ? { expires } : {}) }));
+      await cdp.call(await cdp.browserWs(port), 'Storage.setCookies', { cookies });
+      return cookies.length;
+    } catch { return 0; }
+  }
+  async port() { return cdp.devtoolsPort(this.profile); }
+  async page() { return cdp.pageTarget(await this.port()); }
+  async eval(expression) { const t = await this.page(); return cdp.evaluate(t.webSocketDebuggerUrl, expression); }
+  async navigate(url) { const t = await this.page(); return cdp.call(t.webSocketDebuggerUrl, 'Page.navigate', { url }); }
+  // Click a point given in page CSS pixels using real X input.
+  async clickPage(x, y) {
+    const o = await this.eval('({sx:screenX,sy:screenY,ow:outerWidth,oh:outerHeight,iw:innerWidth,ih:innerHeight,dpr:devicePixelRatio})');
+    const left = o.sx + (o.ow - o.iw) / 2, top = o.sy + (o.oh - o.ih);
+    const X = Math.round(left + x), Y = Math.round(top + y);
+    await this.xdo(['mousemove', String(X), String(Y)]); await new Promise(r => setTimeout(r, 150 + Math.random() * 200));
+    await this.xdo(['click', '1']);
+  }
+  async start() {
+    await fs.rm(path.join(this.profile, 'DevToolsActivePort'), { force: true }).catch(() => {});
     this.chrome = spawn(this.executable, browserArgs(this.profile, this.url), { env: browserEnv(), stdio: 'ignore' });
     this.exited = new Promise(r => this.chrome.once('exit', r));
     const fps = String(Number(process.env.EPIC_LIVE_FPS) || 5);
     this.ffmpeg = spawn('ffmpeg', ['-loglevel', 'error', '-f', 'x11grab', '-draw_mouse', '1', '-framerate', fps, '-video_size', `${SCREEN.w}x${SCREEN.h}`, '-i', process.env.DISPLAY,
       '-f', 'image2pipe', '-vcodec', 'mjpeg', '-q:v', '7', '-'], { stdio: ['ignore', 'pipe', 'ignore'] });
-    this.ffmpeg.stdout.on('data', jpegSplitter(f => this.onFrame(f)));
+    this.ffmpeg.stdout.on('data', jpegSplitter(f => this.onFrame?.(f)));
+    if (await this.restoreSession() && this.reloadAfterRestore !== false) {
+      const t = await this.page().catch(() => null);
+      if (t) await cdp.call(t.webSocketDebuggerUrl, 'Page.reload', {}).catch(() => {});
+    }
   }
   // Serialize X input so events keep their order. Text goes via stdin, never argv.
   input(i) { for (const cmd of xdotoolCommands(i)) this.xdo(cmd); }
@@ -99,6 +145,7 @@ export class PlainBrowser {
   }
   // Graceful SIGTERM lets Chromium flush cookies to the profile before we read it.
   async stop() {
+    if (this.chrome && this.chrome.exitCode === null) await this.saveSession();
     this.ffmpeg?.kill('SIGTERM');
     if (this.chrome && this.chrome.exitCode === null) {
       this.chrome.kill('SIGTERM');

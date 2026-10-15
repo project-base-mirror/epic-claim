@@ -8,7 +8,8 @@ schedule:
   account_delay: "5s"
 claimer:
   type: "exec"
-  command: ["node", "/app/workers/epic/worker.mjs"]
+  # Plain browser on a private Xvfb display (no automation flags; real X input).
+  command: ["xvfb-run", "-a", "--server-args=-screen 0 1280x960x24 -nolisten tcp", "node", "/app/workers/epic/worker.mjs"]
   timeout: "5m"
 # First registered web user becomes admin; afterwards registration stays closed
 # unless enabled here or by an admin in the web UI.

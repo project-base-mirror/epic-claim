@@ -323,14 +323,17 @@ func (s *SQLite) Finish(ctx context.Context, j Job, status ClaimStatus, msg stri
 	if _, err = tx.ExecContext(ctx, `INSERT INTO events(job_id,status,message,created_at) VALUES(?,?,?,?)`, j.ID, status, msg, now); err != nil {
 		return err
 	}
-	session := "ready"
-	if Blocked(status) {
-		session = string(status)
-	} else if status == StatusFailed || status == StatusPending {
-		session = "error"
+	// The account's session status only reflects login state, not per-game outcomes.
+	session := ""
+	if status == StatusLoginRequired {
+		session = "login_required"
+	} else if status == StatusClaimed || status == StatusOwned {
+		session = "ready"
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE accounts SET session_status=?,updated_at=? WHERE id=?`, session, now, j.AccountID); err != nil {
-		return err
+	if session != "" {
+		if _, err = tx.ExecContext(ctx, `UPDATE accounts SET session_status=?,updated_at=? WHERE id=?`, session, now, j.AccountID); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }

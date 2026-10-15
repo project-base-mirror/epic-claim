@@ -38,6 +38,7 @@ type AuthStore interface {
 	SetSetting(context.Context, string, string) error
 	SetCredentials(ctx context.Context, id int64, blob []byte, emailHint string) error
 	Credentials(context.Context, int64) ([]byte, error)
+	ClaimableJobs(context.Context, int64) ([]store.Job, error)
 }
 
 type LoginRunner interface {
@@ -335,6 +336,12 @@ func (o *Options) apiRoutes(api *http.ServeMux) {
 			_ = json.Unmarshal(plain, &c)
 		}
 		c.Interactive = opts.Interactive
+		// Pending free games are claimed in the same live session after login.
+		if jobs, err := o.Auth.ClaimableJobs(r.Context(), id); err == nil {
+			for _, j := range jobs {
+				c.Games = append(c.Games, j.Game)
+			}
+		}
 		if err = o.Login.Start(id, c); errors.Is(err, login.ErrBusy) {
 			fail(w, 409, "该账户正在登录中")
 			return

@@ -11,6 +11,8 @@ import { acquireProfile } from './profile.mjs';
 import { totp } from './totp.mjs';
 import { classify, SELECTORS, SUCCESS_URL, loginURL, isSuccessURL } from './login-flow.mjs';
 import { PlainBrowser } from './plain-browser.mjs';
+import { PlainDriver } from './plain-claim.mjs';
+import { claimGame, validateRequest } from './core.mjs';
 
 const W = 1280, H = 860;
 const out = o => process.stdout.write(JSON.stringify(o) + '\n');
@@ -20,7 +22,7 @@ const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity 
 let firstResolve; const firstLine = new Promise(r => { firstResolve = r; });
 const codes = []; let codeWaiter = null;
 const control = { done: false, cancel: false };
-let page, context, lock, cdp, streaming = false, plain = null, creds = {};
+let page, context, lock, cdp, streaming = false, plain = null, creds = {}, gamesToClaim = [];
 rl.on('line', line => {
   if (firstResolve) { const f = firstResolve; firstResolve = null; return f(line); }
   let m; try { m = JSON.parse(line); } catch { return; }
@@ -76,7 +78,7 @@ async function switchToPlain(chromium) {
   await cdp?.detach().catch(() => {}); cdp = null; streaming = false;
   await context.close().catch(() => {}); context = null; page = null;
   emit('challenge');
-  return plainSession(chromium);
+  return plainSession(chromium, gamesToClaim);
 }
 
 async function enterCode(code) {
@@ -107,26 +109,48 @@ async function checkLoggedIn(chromium, profile) {
 }
 
 const LOGGED_IN_TITLE = /account\/personal|Personal Details|Account Settings|个人信息|账户设置/i;
-async function plainSession(chromium) {
+async function liveLoggedIn() {
+  const href = await plain.eval('location.href').catch(() => '');
+  if (isSuccessURL(href)) return true;
+  await plain.navigate(process.env.EPIC_LOGIN_URL_FOR_TESTS ? new URL('/account/personal', loginURL()).href : SUCCESS_URL).catch(() => {});
+  for (let i = 0; i < 10; i++) { await sleep(1000); if (isSuccessURL(await plain.eval('location.href').catch(() => ''))) return true; }
+  return false;
+}
+
+// After a confirmed login, claim the account's pending free games in the same
+// live browser so the user can resolve any challenge/terms in the popup.
+async function claimInSession(games) {
+  const driver = new PlainDriver(plain, { waitForUser: true, emit });
+  for (const g of games) {
+    emit('claiming');
+    const r = await claimGame(driver, g);
+    out({ claim: { offer_id: r.offer_id, namespace: r.namespace, status: r.status } });
+  }
+}
+
+async function plainSession(chromium, games) {
   if (!process.env.DISPLAY) throw Object.assign(Error('no display'), { code: 'NO_DISPLAY' });
-  const start = () => { plain = new PlainBrowser({ executable: chromium.executablePath(), profile: lock.profile, url: loginURL(), onFrame: f => out({ frame: f.toString('base64') }) }); plain.start(); };
-  start();
+  const start = async () => { plain = new PlainBrowser({ executable: chromium.executablePath(), profile: lock.profile, url: loginURL(), onFrame: f => out({ frame: f.toString('base64') }) }); await plain.start(); };
+  await start();
   const deadline = Date.now() + 10 * 60 * 1000;
   let lastTitle = 0, restarts = 0;
   while (true) {
     await sleep(1000);
     if (control.cancel) return 'cancelled';
     if (Date.now() > deadline) return 'timeout';
-    if (plain.chrome.exitCode !== null) { if (++restarts > 2) return 'error'; await plain.stop(); start(); continue; }
+    if (plain.chrome.exitCode !== null) { if (++restarts > 2) return 'error'; await plain.stop(); await start(); continue; }
     let auto = false;
     if (Date.now() - lastTitle > 3000) { lastTitle = Date.now(); const t = await plain.title(); auto = LOGGED_IN_TITLE.test(t) && !/sign in|登录/i.test(t); }
     if (control.done || auto) {
       control.done = false;
       emit('checking');
-      await plain.stop();
-      if (await checkLoggedIn(chromium, lock.profile)) { plain = null; return 'ready'; }
+      if (await liveLoggedIn()) {
+        await plain.saveSession();
+        emit('ready');
+        if (games.length) { await claimInSession(games); await plain.saveSession(); }
+        return 'ready';
+      }
       emit('not_logged_in');
-      start();
     }
   }
 }
@@ -139,7 +163,10 @@ async function main() {
   lock = await acquireProfile(req.account_id);
   const { chromium } = await import('playwright');
   // Manual login / 去验证: a plain browser with no automation attached.
-  if (req.interactive && process.env.DISPLAY) { emit('interactive'); return await plainSession(chromium); }
+  let games = [];
+  if (Array.isArray(req.games) && req.games.length) games = validateRequest({ account_id: req.account_id, games: req.games }).games;
+  gamesToClaim = games;
+  if (req.interactive && process.env.DISPLAY) { emit('interactive'); return await plainSession(chromium, games); }
   const headed = !!process.env.DISPLAY && process.env.EPIC_LOGIN_HEADLESS !== '1';
   context = await chromium.launchPersistentContext(lock.profile, {
     headless: !headed, locale: 'en-US', acceptDownloads: false, viewport: { width: W, height: H },

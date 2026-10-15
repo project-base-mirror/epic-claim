@@ -15,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/project-base-mirror/epic-claim/internal/epic"
 )
 
 // Credentials is the decrypted payload. It is only ever written to the worker's stdin.
@@ -24,10 +26,17 @@ type Credentials struct {
 	TOTPSecret string `json:"totp_secret,omitempty"`
 	// Interactive opens the live view immediately (manual login).
 	Interactive bool `json:"interactive,omitempty"`
+	// Games to claim in the same live session once logged in.
+	Games []epic.Game `json:"games,omitempty"`
 }
 
 type Store interface {
 	SetLoginStatus(ctx context.Context, id int64, status, message string) error
+}
+
+// ClaimRecorder persists claim results reported by a live session (optional).
+type ClaimRecorder interface {
+	RecordClaim(ctx context.Context, accountID int64, namespace, offerID, status, msg string) error
 }
 
 // Statuses the worker may report. Anything else is treated as "error".
@@ -38,6 +47,10 @@ var Messages = map[string]string{
 	"code_required":       "Epic 已发送验证码，请点击“输入验证码”。",
 	"code_submitted":      "验证码已提交，正在等待 Epic 确认…",
 	"checking":            "正在确认登录状态…",
+	"claiming":            "已登录，正在弹窗中领取免费游戏…",
+	"claim_challenge":     "领取时需要人机验证：请在弹窗中完成，完成后会自动继续。",
+	"claim_login":         "领取时发现未登录：请在弹窗中登录。",
+	"claim_terms":         "Epic 要求同意条款：请在弹窗中自行确认（点 Accept/同意）后会继续领取。",
 	"not_logged_in":       "尚未检测到登录成功，请在弹窗中继续完成登录。",
 	"ready":               "已登录，浏览器会话已保存。",
 	"captcha_required":    "需要完成人机验证，请点击“去验证”。",
@@ -51,7 +64,7 @@ var Messages = map[string]string{
 
 // Interactive reports whether a status means the live view is useful right now.
 func Interactive(status string) bool {
-	return status == "interactive" || status == "challenge" || status == "code_required" || status == "not_logged_in"
+	return status == "interactive" || status == "challenge" || status == "code_required" || status == "not_logged_in" || status == "claim_challenge" || status == "claim_login" || status == "claim_terms"
 }
 
 var codeRE = regexp.MustCompile(`^[A-Za-z0-9]{4,10}$`)
@@ -85,11 +98,13 @@ func (rn *run) publish(e Event) {
 }
 
 type Runner struct {
-	Command []string
-	Timeout time.Duration
-	Store   Store
-	mu      sync.Mutex
-	runs    map[int64]*run
+	// ClaimMessage validates a worker claim status and returns its message.
+	ClaimMessage func(status string) (string, bool)
+	Command      []string
+	Timeout      time.Duration
+	Store        Store
+	mu           sync.Mutex
+	runs         map[int64]*run
 }
 
 var ErrBusy = errors.New("a login is already running for this account")
@@ -160,12 +175,30 @@ func (r *Runner) Start(id int64, c Credentials) error {
 			var ev struct {
 				Status string `json:"status"`
 				Frame  []byte `json:"frame"` // base64 in JSON
+				Claim  *struct {
+					OfferID   string `json:"offer_id"`
+					Namespace string `json:"namespace"`
+					Status    string `json:"status"`
+				} `json:"claim"`
 			}
 			if json.Unmarshal(sc.Bytes(), &ev) != nil {
 				continue
 			}
 			if ev.Frame != nil {
 				rn.publish(Event{Frame: ev.Frame})
+				continue
+			}
+			if ev.Claim != nil {
+				if rec, ok := r.Store.(ClaimRecorder); ok && r.ClaimMessage != nil {
+					if msg, ok := r.ClaimMessage(ev.Claim.Status); ok {
+						ctx, c := context.WithTimeout(context.Background(), 5*time.Second)
+						if err := rec.RecordClaim(ctx, id, ev.Claim.Namespace, ev.Claim.OfferID, ev.Claim.Status, msg); err != nil {
+							log.Printf("login: cannot record claim result for account %d", id)
+						}
+						c()
+					}
+				}
+				rn.publish(Event{Status: "claim_" + ev.Claim.Status})
 				continue
 			}
 			if _, ok := Messages[ev.Status]; !ok {

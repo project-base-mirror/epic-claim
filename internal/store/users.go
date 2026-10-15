@@ -184,3 +184,49 @@ func (s *SQLite) SetLoginStatus(ctx context.Context, id int64, status, message s
 	_, err := s.db.ExecContext(ctx, `UPDATE accounts SET session_status=?,login_message=?,updated_at=? WHERE id=?`, status, message, stamp(time.Now()), id)
 	return err
 }
+
+// ClaimableJobs returns the account's not-yet-successful jobs whose promotion is
+// still active (used to claim inside a live, user-attended browser session).
+func (s *SQLite) ClaimableJobs(ctx context.Context, accountID int64) ([]Job, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+jobCols+` FROM jobs WHERE account_id=? AND status NOT IN ('claimed','owned','running') ORDER BY id`, accountID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Job{}
+	now := time.Now()
+	for rows.Next() {
+		j, e := scanJob(rows)
+		if e != nil {
+			return nil, e
+		}
+		if j.Game.EndDate.After(now) && !j.Game.StartDate.After(now) {
+			out = append(out, j)
+		}
+	}
+	return out, rows.Err()
+}
+
+// RecordClaim stores a claim outcome reported by a live session.
+func (s *SQLite) RecordClaim(ctx context.Context, accountID int64, namespace, offerID, status, msg string) error {
+	now := stamp(time.Now())
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var id int64
+	if err = tx.QueryRowContext(ctx, `SELECT id FROM jobs WHERE account_id=? AND namespace=? AND offer_id=? AND status NOT IN ('claimed','owned','running')`, accountID, namespace, offerID).Scan(&id); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE jobs SET status=?,message=?,attempts=attempts+1,updated_at=? WHERE id=?`, status, msg, now, id); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO events(job_id,status,message,created_at) VALUES(?,?,?,?)`, id, status, msg, now); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
