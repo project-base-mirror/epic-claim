@@ -99,6 +99,25 @@ export class PlainBrowser {
       return cookies.length;
     } catch { return 0; }
   }
+  async reloadPage() { const t = await this.page(); return cdp.call(t.webSocketDebuggerUrl, 'Page.reload', { ignoreCache: true }); }
+  // Forget Epic/hCaptcha/Cloudflare state (cookies + site storage) so the next login starts clean.
+  async resetEpicState() {
+    const ws = await cdp.browserWs(await this.port());
+    const { cookies } = await cdp.call(ws, 'Storage.getCookies');
+    const keep = cookies.filter(c => !/(epicgames|hcaptcha|unrealengine|cloudflare)\./.test(c.domain));
+    await cdp.call(ws, 'Storage.clearCookies');
+    if (keep.length) await cdp.call(ws, 'Storage.setCookies', { cookies: keep.map(({ name, value, domain, path, secure, httpOnly, sameSite, expires }) => ({ name, value, domain, path, secure, httpOnly, sameSite, ...(expires > 0 ? { expires } : {}) })) });
+    for (const origin of ['https://www.epicgames.com', 'https://store.epicgames.com', 'https://epicgames.com', 'https://talon-website-prod.ecosec.on.epicgames.com', 'https://newassets.hcaptcha.com', 'https://hcaptcha.com'])
+      await cdp.call(ws, 'Storage.clearDataForOrigin', { origin, storageTypes: 'all' }).catch(() => {});
+    await fs.rm(this.sessionFile, { force: true });
+  }
+  // Cookies exported from the user's own browser (Cookie-Editor JSON or Netscape, normalised by the server).
+  async importCookies(list) {
+    const ws = await cdp.browserWs(await this.port());
+    const cookies = list.filter(c => c && c.name && /epicgames\.com$/.test(String(c.domain || '').replace(/^\./, ''))).map(c => ({ name: String(c.name), value: String(c.value ?? ''), domain: String(c.domain), path: c.path || '/', secure: c.secure !== false, httpOnly: !!c.httpOnly, ...(c.expires > 0 ? { expires: c.expires } : { expires: Math.floor(Date.now() / 1000) + 30 * 86400 }) }));
+    if (cookies.length) await cdp.call(ws, 'Storage.setCookies', { cookies });
+    return cookies.length;
+  }
   async port() { return cdp.devtoolsPort(this.profile); }
   async page() { return cdp.pageTarget(await this.port()); }
   async eval(expression) { const t = await this.page(); return cdp.evaluate(t.webSocketDebuggerUrl, expression); }

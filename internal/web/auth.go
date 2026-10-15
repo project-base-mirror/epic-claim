@@ -352,6 +352,41 @@ func (o *Options) apiRoutes(api *http.ServeMux) {
 		w.WriteHeader(http.StatusAccepted)
 		respond(w, map[string]bool{"ok": true}, nil)
 	})
+	// Fallback: import a logged-in session exported from the user's own browser.
+	// The cookies go straight to a live session (which verifies the login and claims);
+	// they are not stored in the database.
+	api.HandleFunc("POST /api/accounts/{id}/cookies", func(w http.ResponseWriter, r *http.Request) {
+		id, ok := positiveID(w, r)
+		if !ok || o.Login == nil {
+			return
+		}
+		var in struct {
+			Text string `json:"text"`
+		}
+		if !decode(w, r, &in) {
+			return
+		}
+		cookies, err := login.ParseCookies(in.Text)
+		if err != nil {
+			fail(w, 400, "没有识别到 epicgames.com 的 Cookie。请粘贴 Cookie-Editor 导出的 JSON 或 cookies.txt（Netscape）内容")
+			return
+		}
+		c := login.Credentials{Interactive: true, Cookies: cookies}
+		if jobs, err := o.Auth.ClaimableJobs(r.Context(), id); err == nil {
+			for _, j := range jobs {
+				c.Games = append(c.Games, j.Game)
+			}
+		}
+		if err = o.Login.Start(id, c); errors.Is(err, login.ErrBusy) {
+			fail(w, 409, "该账户已有进行中的登录窗口，请先取消")
+			return
+		} else if err != nil {
+			fail(w, 500, "无法启动登录 Worker")
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+		respond(w, map[string]int{"cookies": len(cookies)}, nil)
+	})
 	api.HandleFunc("POST /api/accounts/{id}/live", func(w http.ResponseWriter, r *http.Request) {
 		id, ok := positiveID(w, r)
 		if !ok || o.Login == nil {
@@ -365,7 +400,7 @@ func (o *Options) apiRoutes(api *http.ServeMux) {
 		}
 		msg := map[string]any{}
 		switch in.Action {
-		case "done", "cancel":
+		case "done", "cancel", "reload", "reset":
 			msg[in.Action] = true
 		case "fill_email", "fill_password":
 			// The worker types the stored value itself; it never reaches the browser client.

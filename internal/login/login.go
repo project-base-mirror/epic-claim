@@ -28,6 +28,83 @@ type Credentials struct {
 	Interactive bool `json:"interactive,omitempty"`
 	// Games to claim in the same live session once logged in.
 	Games []epic.Game `json:"games,omitempty"`
+	// Cookies imported from the user's own browser (fallback login).
+	Cookies []Cookie `json:"cookies,omitempty"`
+}
+
+// Cookie is a browser cookie for an epicgames.com host.
+type Cookie struct {
+	Name     string  `json:"name"`
+	Value    string  `json:"value"`
+	Domain   string  `json:"domain"`
+	Path     string  `json:"path"`
+	Secure   bool    `json:"secure"`
+	HTTPOnly bool    `json:"httpOnly"`
+	Expires  float64 `json:"expires,omitempty"`
+}
+
+// ParseCookies accepts a Cookie-Editor/EditThisCookie JSON export or a Netscape
+// cookies.txt and keeps only epicgames.com cookies.
+func ParseCookies(text string) ([]Cookie, error) {
+	text = strings.TrimSpace(text)
+	var out []Cookie
+	if strings.HasPrefix(text, "[") || strings.HasPrefix(text, "{") {
+		var raw []map[string]any
+		if strings.HasPrefix(text, "{") {
+			var one struct {
+				Cookies []map[string]any `json:"cookies"`
+			}
+			if err := json.Unmarshal([]byte(text), &one); err != nil {
+				return nil, err
+			}
+			raw = one.Cookies
+		} else if err := json.Unmarshal([]byte(text), &raw); err != nil {
+			return nil, err
+		}
+		for _, m := range raw {
+			c := Cookie{Path: "/", Secure: true}
+			c.Name, _ = m["name"].(string)
+			c.Value, _ = m["value"].(string)
+			c.Domain, _ = m["domain"].(string)
+			if p, ok := m["path"].(string); ok && p != "" {
+				c.Path = p
+			}
+			if b, ok := m["secure"].(bool); ok {
+				c.Secure = b
+			}
+			c.HTTPOnly, _ = m["httpOnly"].(bool)
+			for _, k := range []string{"expirationDate", "expires"} {
+				if f, ok := m[k].(float64); ok && f > 0 {
+					c.Expires = f
+				}
+			}
+			out = append(out, c)
+		}
+	} else {
+		for _, line := range strings.Split(text, "\n") {
+			line = strings.TrimSpace(strings.TrimPrefix(line, "#HttpOnly_"))
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
+			}
+			f := strings.Split(line, "\t")
+			if len(f) < 7 {
+				continue
+			}
+			exp, _ := strconv.ParseFloat(f[4], 64)
+			out = append(out, Cookie{Domain: f[0], Path: f[2], Secure: strings.EqualFold(f[3], "TRUE"), Expires: exp, Name: f[5], Value: f[6], HTTPOnly: strings.Contains(line, "HttpOnly")})
+		}
+	}
+	keep := out[:0]
+	for _, c := range out {
+		d := strings.TrimPrefix(strings.ToLower(c.Domain), ".")
+		if c.Name != "" && (d == "epicgames.com" || strings.HasSuffix(d, ".epicgames.com")) {
+			keep = append(keep, c)
+		}
+	}
+	if len(keep) == 0 {
+		return nil, errors.New("no epicgames.com cookies")
+	}
+	return keep, nil
 }
 
 type Store interface {
@@ -47,6 +124,7 @@ var Messages = map[string]string{
 	"code_required":       "Epic 已发送验证码，请点击“输入验证码”。",
 	"code_submitted":      "验证码已提交，正在等待 Epic 确认…",
 	"checking":            "正在确认登录状态…",
+	"incorrect_response":  "Epic 拒绝了这次登录（Incorrect response）。请点右侧“刷新重试”；仍不行就点“清除登录痕迹重试”，或改用“导入 Cookie”。",
 	"claiming":            "已登录，正在弹窗中领取免费游戏…",
 	"claim_challenge":     "领取时需要人机验证：请在弹窗中完成，完成后会自动继续。",
 	"claim_login":         "领取时发现未登录：请在弹窗中登录。",
@@ -64,7 +142,7 @@ var Messages = map[string]string{
 
 // Interactive reports whether a status means the live view is useful right now.
 func Interactive(status string) bool {
-	return status == "interactive" || status == "challenge" || status == "code_required" || status == "not_logged_in" || status == "claim_challenge" || status == "claim_login" || status == "claim_terms"
+	return status == "interactive" || status == "challenge" || status == "code_required" || status == "not_logged_in" || status == "incorrect_response" || status == "claim_challenge" || status == "claim_login" || status == "claim_terms"
 }
 
 var codeRE = regexp.MustCompile(`^[A-Za-z0-9]{4,10}$`)

@@ -21,13 +21,15 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
 let firstResolve; const firstLine = new Promise(r => { firstResolve = r; });
 const codes = []; let codeWaiter = null;
-const control = { done: false, cancel: false };
+const control = { done: false, cancel: false, reload: false, reset: false };
 let page, context, lock, cdp, streaming = false, plain = null, creds = {}, gamesToClaim = [];
 rl.on('line', line => {
   if (firstResolve) { const f = firstResolve; firstResolve = null; return f(line); }
   let m; try { m = JSON.parse(line); } catch { return; }
   if (m.done) control.done = true;
   else if (m.cancel) control.cancel = true;
+  else if (m.reload) control.reload = true;
+  else if (m.reset) control.reset = true;
   else if (typeof m.code === 'string') { codes.push(m.code); codeWaiter?.(); }
   else if (m.input) handleInput(m.input).catch(() => {});
   else if (m.fill === 'email' && plain && creds.email) plain.typeSecret(creds.email);
@@ -133,14 +135,23 @@ async function plainSession(chromium, games) {
   const start = async () => { plain = new PlainBrowser({ executable: chromium.executablePath(), profile: lock.profile, url: loginURL(), onFrame: f => out({ frame: f.toString('base64') }) }); await plain.start(); };
   await start();
   const deadline = Date.now() + 10 * 60 * 1000;
-  let lastTitle = 0, restarts = 0;
+  let lastTitle = 0, restarts = 0, sawIncorrect = false;
+  if (creds.cookies.length && await plain.importCookies(creds.cookies).catch(() => 0)) { emit('checking'); await plain.navigate(SUCCESS_URL).catch(() => {}); }
   while (true) {
     await sleep(1000);
     if (control.cancel) return 'cancelled';
     if (Date.now() > deadline) return 'timeout';
     if (plain.chrome.exitCode !== null) { if (++restarts > 2) return 'error'; await plain.stop(); await start(); continue; }
+    if (control.reload) { control.reload = false; await plain.reloadPage().catch(() => {}); emit('interactive'); }
+    if (control.reset) { control.reset = false; await plain.resetEpicState().catch(() => {}); await plain.navigate(loginURL()).catch(() => {}); emit('interactive'); }
     let auto = false;
-    if (Date.now() - lastTitle > 3000) { lastTitle = Date.now(); const t = await plain.title(); auto = LOGGED_IN_TITLE.test(t) && !/sign in|登录/i.test(t); }
+    if (Date.now() - lastTitle > 3000) {
+      lastTitle = Date.now(); const t = await plain.title(); auto = LOGGED_IN_TITLE.test(t) && !/sign in|登录/i.test(t);
+      // Epic's anti-bot rejection banner: offer reload / reset in the side panel.
+      const bad = await plain.eval("/Incorrect response\\. Please refresh|响应不正确/i.test(document.body ? document.body.innerText : '')").catch(() => false);
+      if (bad && !sawIncorrect) emit('incorrect_response');
+      sawIncorrect = bad;
+    }
     if (control.done || auto) {
       control.done = false;
       emit('checking');
@@ -159,7 +170,7 @@ async function main() {
   const req = JSON.parse(await firstLine || 'null');
   if (!req || !Number.isSafeInteger(req.account_id) || req.account_id <= 0) throw Error('bad request');
   const email = typeof req.email === 'string' ? req.email : '', password = typeof req.password === 'string' ? req.password : '';
-  creds = { email, password };
+  creds = { email, password, cookies: Array.isArray(req.cookies) ? req.cookies : [] };
   lock = await acquireProfile(req.account_id);
   const { chromium } = await import('playwright');
   // Manual login / 去验证: a plain browser with no automation attached.

@@ -101,3 +101,19 @@ func TestCancelReflectsImmediately(t *testing.T) {
 		t.Fatalf("status after cancel = %q", got)
 	}
 }
+
+func TestParseCookies(t *testing.T) {
+	j := `[{"domain":".epicgames.com","name":"EPIC_SESSION_AP","value":"x","path":"/","secure":true,"httpOnly":true},{"domain":".google.com","name":"g","value":"y"}]`
+	c, err := ParseCookies(j)
+	if err != nil || len(c) != 1 || c[0].Name != "EPIC_SESSION_AP" || !c[0].HTTPOnly {
+		t.Fatalf("json: %+v %v", c, err)
+	}
+	n := "# Netscape HTTP Cookie File\n#HttpOnly_.epicgames.com\tTRUE\t/\tTRUE\t1893456000\tEPIC_EG1\tz\nexample.com\tFALSE\t/\tFALSE\t0\ta\tb\n"
+	c, err = ParseCookies(n)
+	if err != nil || len(c) != 1 || c[0].Name != "EPIC_EG1" || c[0].Expires != 1893456000 {
+		t.Fatalf("netscape: %+v %v", c, err)
+	}
+	if _, err = ParseCookies("[]"); err == nil {
+		t.Fatal("empty accepted")
+	}
+}
