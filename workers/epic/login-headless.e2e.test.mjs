@@ -18,12 +18,12 @@ function server() {
       res.setHeader('Content-Type', 'text/html');
       if (req.url.startsWith('/cf')) return res.end('<html><head><title>Just a moment...</title></head><body>One more step<input type="hidden" name="cf-turnstile-response"></body></html>');
       if (req.url.startsWith('/account')) return res.end('<h1>Account</h1>');
-      if (f.get('email') && !f.get('password')) return res.end(page(`<input type="hidden" name="email" value="${f.get('email')}"><input id="password" name="password" type="password"><button id="sign-in" type="submit">Sign in</button>`));
+      if (f.get('email') && !f.get('password')) return res.end(page(`<input type="hidden" name="email" value="${f.get('email')}"><input id="password" name="password" type="password" autofocus><button id="sign-in" type="submit">Sign in</button>`));
       if (f.get('password') === 'wrong') return res.end(page(`<div role="alert">Sorry the credentials you are using are invalid.</div>`));
-      if (f.get('password')) return res.end(page(`<input id="code" name="code"><button id="continue" type="submit">Continue</button>`));
+      if (f.get('password')) return res.end(page(`<input id="code" name="code" autofocus><button id="continue" type="submit">Continue</button>`));
       if (f.get('code') === '424242') { res.statusCode = 303; res.setHeader('Location', '/account/personal'); return res.end(); }
       if (f.get('code')) return res.end(page(`<div role="alert">Invalid code</div>`));
-      res.end(page(`<input id="email" name="email" type="email"><button id="continue" type="submit">Continue</button>`));
+      res.end(page(`<input id="email" name="email" type="email" autofocus><button id="continue" type="submit">Continue</button>`));
     });
   });
 }
@@ -58,25 +58,43 @@ test('Cloudflare challenge opens the live view and waits for the user (no bypass
   assert.equal(s.at(-1), 'cancelled');
   assert.ok(frames > 0, 'live frames streamed');
 });
-test('manual (interactive) login: user types into the live view, then 我已完成', { skip: !hasBrowser && 'no Playwright browser', timeout: 120000 }, async () => {
+test('manual (interactive) login via CDP live view (no X display)', { skip: (!hasBrowser && 'no Playwright browser') || (process.env.DISPLAY && 'plain-browser mode under X'), timeout: 120000 }, async () => {
   let frames = 0;
   const s = await run({ interactive: true }, async (st, child) => {
     if (st !== 'interactive') return;
     const send = m => child.stdin.write(JSON.stringify(m) + '\n');
     await new Promise(r => setTimeout(r, 2500));
     // Email field of the fake page sits at the top-left; click it and type.
-    send({ input: { type: 'click', x: 20, y: 18 } });
+    send({ input: { type: 'click', x: 20 / 1280, y: 18 / 860 } });
     send({ input: { type: 'text', text: 'user@example.com' } });
     send({ input: { type: 'key', key: 'Enter' } });
     await new Promise(r => setTimeout(r, 2000));
-    send({ input: { type: 'click', x: 20, y: 18 } });
+    send({ input: { type: 'click', x: 20 / 1280, y: 18 / 860 } });
     send({ input: { type: 'text', text: 'right' } });
     send({ input: { type: 'key', key: 'Enter' } });
     await new Promise(r => setTimeout(r, 2000));
-    send({ input: { type: 'click', x: 20, y: 18 } });
+    send({ input: { type: 'click', x: 20 / 1280, y: 18 / 860 } });
     send({ input: { type: 'text', text: '424242' } });
     send({ input: { type: 'key', key: 'Enter' } });
   }, '/login', () => frames++);
   assert.equal(s.at(-1), 'ready');
   assert.ok(frames > 0);
+});
+
+let hasX = !!process.env.DISPLAY;
+try { const { execFileSync } = await import('node:child_process'); execFileSync('which', ['xdotool', 'ffmpeg']); } catch { hasX = false; }
+test('manual login in a PLAIN browser (no automation) on X: frames via x11grab, input via xdotool, auto-detects login', { skip: (!hasBrowser || !hasX) && 'needs Xvfb + xdotool + ffmpeg', timeout: 180000 }, async () => {
+  let frames = 0;
+  const s = await run({ email: 'user@example.com', password: 'right', interactive: true }, async (st, child) => {
+    if (st !== 'interactive') return;
+    const send = m => child.stdin.write(JSON.stringify(m) + '\n');
+    await new Promise(r => setTimeout(r, 6000));
+    send({ fill: 'email' }); send({ input: { type: 'key', key: 'Enter' } });
+    await new Promise(r => setTimeout(r, 3000));
+    send({ fill: 'password' }); send({ input: { type: 'key', key: 'Enter' } });
+    await new Promise(r => setTimeout(r, 3000));
+    send({ input: { type: 'text', text: '424242' } }); send({ input: { type: 'key', key: 'Enter' } });
+  }, '/login', () => frames++);
+  assert.equal(s.at(-1), 'ready', s.join(','));
+  assert.ok(frames > 5, 'x11 frames streamed');
 });

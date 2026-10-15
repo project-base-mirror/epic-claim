@@ -356,11 +356,18 @@ func (o *Options) apiRoutes(api *http.ServeMux) {
 		if !decode(w, r, &in) {
 			return
 		}
-		if in.Action != "done" && in.Action != "cancel" {
+		msg := map[string]any{}
+		switch in.Action {
+		case "done", "cancel":
+			msg[in.Action] = true
+		case "fill_email", "fill_password":
+			// The worker types the stored value itself; it never reaches the browser client.
+			msg["fill"] = strings.TrimPrefix(in.Action, "fill_")
+		default:
 			fail(w, 400, "未知操作")
 			return
 		}
-		if err := o.Login.Send(id, map[string]any{in.Action: true}); err != nil {
+		if err := o.Login.Send(id, msg); err != nil {
 			fail(w, 409, "该账户当前没有进行中的登录窗口")
 			return
 		}

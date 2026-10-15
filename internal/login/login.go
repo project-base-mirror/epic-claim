@@ -37,6 +37,7 @@ var Messages = map[string]string{
 	"challenge":           "Epic 需要人机验证，请点击“去验证”在弹窗中完成。",
 	"code_required":       "Epic 已发送验证码，请点击“输入验证码”。",
 	"code_submitted":      "验证码已提交，正在等待 Epic 确认…",
+	"checking":            "正在确认登录状态…",
 	"not_logged_in":       "尚未检测到登录成功，请在弹窗中继续完成登录。",
 	"ready":               "已登录，浏览器会话已保存。",
 	"captcha_required":    "需要完成人机验证，请点击“去验证”。",
@@ -187,7 +188,7 @@ func (r *Runner) Start(id int64, c Credentials) error {
 		final := last
 		if ctx.Err() == context.DeadlineExceeded {
 			final = "timeout"
-		} else if final == "" || final == "logging_in" || final == "code_submitted" || Interactive(final) {
+		} else if final == "" || final == "logging_in" || final == "code_submitted" || final == "checking" || Interactive(final) {
 			final = "error"
 		}
 		if final != last {

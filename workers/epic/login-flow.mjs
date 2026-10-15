@@ -40,6 +40,8 @@ export async function classify(page) {
     if (box && box.width >= 200 && box.height >= 200) return 'captcha';
   }
   const err = await visible(page.locator(SELECTORS.error));
+  // Epic's anti-bot rejection ("Incorrect response. Please refresh the page.") is not a password error.
+  if (err && /incorrect response|refresh the page/i.test(await err.textContent().catch(() => '') || '')) return 'captcha';
   if (err && /incorrect|invalid|wrong|doesn.t match|not match/i.test(await err.textContent().catch(() => '') || '')) return 'bad_credentials';
   if (await visible(page.locator(SELECTORS.code))) return 'code';
   if (await visible(page.locator(SELECTORS.password))) return 'password';
