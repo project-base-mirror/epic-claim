@@ -4,7 +4,9 @@ import { browserArgs, browserEnv, jpegSplitter, xdotoolCommands, SCREEN } from '
 
 test('plain browser has no automation flags; proxy/timezone are configurable', () => {
   const a = browserArgs('/p', 'https://www.epicgames.com/id/login', {});
-  assert.ok(!a.some(x => /enable-automation|remote-debugging|headless/.test(x)));
+  assert.ok(!a.some(x => /enable-automation|remote-debugging-pipe|headless/.test(x)));
+  // DevTools only on loopback with a Chromium-chosen port (state reading; never exposed).
+  assert.ok(a.includes('--remote-debugging-address=127.0.0.1') && a.includes('--remote-debugging-port=0'));
   assert.ok(browserArgs('/p', 'u', { EPIC_BROWSER_PROXY: 'direct' }).includes('--no-proxy-server'));
   assert.ok(browserArgs('/p', 'u', { EPIC_BROWSER_PROXY: 'http://h:7890' }).includes('--proxy-server=http://h:7890'));
   assert.ok(!browserArgs('/p', 'u', { EPIC_BROWSER_PROXY: 'http://h:7890 --evil' }).some(x => x.includes('evil')));
