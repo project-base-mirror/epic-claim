@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/project-base-mirror/epic-claim/internal/epic"
+	"github.com/project-base-mirror/epic-claim/internal/login"
 	"github.com/project-base-mirror/epic-claim/internal/store"
 )
 
@@ -54,6 +55,10 @@ func New(addr string, service Service, adminToken string, options ...Options) *h
 		if opt != nil && opt.Login != nil {
 			for i := range v {
 				v[i].LoginRunning = opt.Login.Running(v[i].ID)
+				// Always show the current wording (older rows may hold outdated text).
+				if msg, ok := login.Messages[v[i].SessionStatus]; ok {
+					v[i].LoginMessage = msg
+				}
 			}
 		}
 		respond(w, v, e)
