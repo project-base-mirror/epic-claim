@@ -2,6 +2,7 @@ listen: ":8080"
 database: "/data/epic-claim.db"
 locale: "en-US"
 country: "US"
+epic_endpoint: "https://store-site-backend-static-ipv4.ak.epicgames.com/freeGamesPromotions"
 schedule:
   check_interval: "1h"
   account_delay: "5s"

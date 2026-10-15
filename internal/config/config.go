@@ -4,6 +4,7 @@ package config
 import (
 	"fmt"
 	"gopkg.in/yaml.v3"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -14,7 +15,9 @@ type Config struct {
 	Database string `yaml:"database"`
 	Locale   string `yaml:"locale"`
 	Country  string `yaml:"country"`
-	Schedule struct {
+	// EpicEndpoint overrides the freeGamesPromotions API URL.
+	EpicEndpoint string `yaml:"epic_endpoint"`
+	Schedule     struct {
 		CheckInterval time.Duration `yaml:"check_interval"`
 		AccountDelay  time.Duration `yaml:"account_delay"`
 	} `yaml:"schedule"`
@@ -26,7 +29,7 @@ type Config struct {
 }
 
 func Load(path string) (*Config, error) {
-	c := &Config{Listen: "127.0.0.1:8080", Database: "data/epic-claim.db", Locale: "en-US", Country: "US"}
+	c := &Config{Listen: "127.0.0.1:8080", Database: "data/epic-claim.db", Locale: "en-US", Country: "US", EpicEndpoint: "https://store-site-backend-static-ipv4.ak.epicgames.com/freeGamesPromotions"}
 	c.Schedule.CheckInterval = time.Hour
 	c.Schedule.AccountDelay = 5 * time.Second
 	c.Claimer.Type = "exec"
@@ -45,6 +48,9 @@ func Load(path string) (*Config, error) {
 	}
 	if c.Listen == "" || c.Database == "" || c.Locale == "" || len(c.Country) != 2 {
 		return nil, fmt.Errorf("listen, database, locale and two-letter country are required")
+	}
+	if u, err := url.Parse(c.EpicEndpoint); err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+		return nil, fmt.Errorf("epic_endpoint must be an http(s) URL")
 	}
 	if c.Locale != "en-US" {
 		return nil, fmt.Errorf("current browser adapter requires locale en-US for title and checkout matching")

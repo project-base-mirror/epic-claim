@@ -12,7 +12,9 @@ import (
 	"time"
 )
 
-const endpoint = "https://store-site-backend-static.epicgames.com/freeGamesPromotions"
+// DefaultEndpoint is the free-games promotions API. The historical host
+// store-site-backend-static.epicgames.com no longer resolves publicly.
+const DefaultEndpoint = "https://store-site-backend-static-ipv4.ak.epicgames.com/freeGamesPromotions"
 
 type Game struct {
 	Title     string    `json:"title"`
@@ -27,6 +29,7 @@ type Game struct {
 type Client struct {
 	HTTP            *http.Client
 	Locale, Country string
+	Endpoint        string // defaults to DefaultEndpoint when empty
 }
 
 func NewClient(locale, country string) *Client {
@@ -76,8 +79,17 @@ type response struct {
 
 // CurrentFreeGames returns titles that are free right now.
 func (c *Client) CurrentFreeGames(ctx context.Context) ([]Game, error) {
+	return c.CurrentFreeGamesAt(ctx, time.Now())
+}
+
+// CurrentFreeGamesAt is CurrentFreeGames evaluated at the given instant.
+func (c *Client) CurrentFreeGamesAt(ctx context.Context, now time.Time) ([]Game, error) {
 	q := url.Values{"locale": {c.Locale}, "country": {c.Country}, "allowCountries": {c.Country}}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+"?"+q.Encode(), nil)
+	ep := c.Endpoint
+	if ep == "" {
+		ep = DefaultEndpoint
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ep+"?"+q.Encode(), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -93,7 +105,6 @@ func (c *Client) CurrentFreeGames(ctx context.Context) ([]Game, error) {
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(&r); err != nil {
 		return nil, err
 	}
-	now := time.Now()
 	var out []Game
 	seen := map[string]bool{}
 	for _, e := range r.Data.Catalog.SearchStore.Elements {
@@ -105,12 +116,15 @@ func (c *Client) CurrentFreeGames(ctx context.Context) ([]Game, error) {
 				if o.DiscountSetting.DiscountPercentage == nil || *o.DiscountSetting.DiscountPercentage != 0 || o.StartDate.IsZero() || !o.StartDate.Before(o.EndDate) || now.Before(o.StartDate) || !now.Before(o.EndDate) {
 					continue
 				}
-				slug := e.ProductSlug
+				slug := ""
 				if len(e.OfferMappings) > 0 && e.OfferMappings[0].PageSlug != "" {
 					slug = e.OfferMappings[0].PageSlug
-				} else if len(e.CatalogNs.Mappings) > 0 {
+				} else if len(e.CatalogNs.Mappings) > 0 && e.CatalogNs.Mappings[0].PageSlug != "" {
 					slug = e.CatalogNs.Mappings[0].PageSlug
+				} else {
+					slug = e.ProductSlug
 				}
+				slug = normalizeSlug(slug)
 				key := e.Namespace + "\x00" + e.ID
 				if seen[key] || slug == "" || strings.ContainsAny(slug, "/?#\\") || slug == "." || slug == ".." {
 					continue
@@ -125,4 +139,13 @@ func (c *Client) CurrentFreeGames(ctx context.Context) ([]Game, error) {
 		}
 	}
 	return out, nil
+}
+
+// normalizeSlug trims path suffixes such as "game/home" to "game".
+func normalizeSlug(s string) string {
+	s = strings.Trim(strings.TrimSpace(s), "/")
+	if i := strings.IndexByte(s, '/'); i >= 0 {
+		s = s[:i]
+	}
+	return s
 }

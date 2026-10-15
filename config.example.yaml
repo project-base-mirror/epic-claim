@@ -3,6 +3,7 @@ listen: "127.0.0.1:8080"
 database: "data/epic-claim.db"
 locale: "en-US"
 country: "US" # Set to your account's actual store region.
+epic_endpoint: "https://store-site-backend-static-ipv4.ak.epicgames.com/freeGamesPromotions"
 schedule:
   check_interval: "1h" # Initial default; dashboard settings persist in SQLite.
   account_delay: "5s"

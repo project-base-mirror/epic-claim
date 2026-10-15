@@ -35,7 +35,9 @@ func main() {
 		log.Fatal(err)
 	}
 	defer st.Close()
-	sch := &scheduler.Scheduler{Epic: epic.NewClient(cfg.Locale, cfg.Country), Store: st, Claimer: &claimer.Exec{Command: cfg.Claimer.Command, Timeout: cfg.Claimer.Timeout}, AccountDelay: cfg.Schedule.AccountDelay}
+	ec := epic.NewClient(cfg.Locale, cfg.Country)
+	ec.Endpoint = cfg.EpicEndpoint
+	sch := &scheduler.Scheduler{Epic: ec, Store: st, Claimer: &claimer.Exec{Command: cfg.Claimer.Command, Timeout: cfg.Claimer.Timeout}, AccountDelay: cfg.Schedule.AccountDelay}
 	done := make(chan struct{})
 	go func() { defer close(done); sch.Run(ctx) }()
 	srv := web.New(cfg.Listen, sch, token)
