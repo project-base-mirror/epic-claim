@@ -16,6 +16,7 @@ function server() {
     req.on('end', () => {
       const f = new URLSearchParams(data);
       res.setHeader('Content-Type', 'text/html');
+      if (req.url.startsWith('/cf')) return res.end('<html><head><title>Just a moment...</title></head><body>One more step<input type="hidden" name="cf-turnstile-response"></body></html>');
       if (req.url.startsWith('/account')) return res.end('<h1>Account</h1>');
       if (f.get('email') && !f.get('password')) return res.end(page(`<input type="hidden" name="email" value="${f.get('email')}"><input id="password" name="password" type="password"><button id="sign-in" type="submit">Sign in</button>`));
       if (f.get('password') === 'wrong') return res.end(page(`<div role="alert">Sorry the credentials you are using are invalid.</div>`));
@@ -26,11 +27,11 @@ function server() {
     });
   });
 }
-async function run(creds, onStatus) {
+async function run(creds, onStatus, start = '/login') {
   const srv = server(); await new Promise(r => srv.listen(0, '127.0.0.1', r));
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'epic-login-'));
   const child = spawn(process.execPath, [new URL('./login-headless.mjs', import.meta.url).pathname], {
-    env: { ...process.env, EPIC_PROFILE_ROOT: root, EPIC_LOGIN_URL_FOR_TESTS: `http://127.0.0.1:${srv.address().port}/login` }, stdio: ['pipe', 'pipe', 'ignore'] });
+    env: { ...process.env, EPIC_PROFILE_ROOT: root, EPIC_LOGIN_URL_FOR_TESTS: `http://127.0.0.1:${srv.address().port}${start}` }, stdio: ['pipe', 'pipe', 'ignore'] });
   child.stdin.write(JSON.stringify({ account_id: 1, ...creds }) + '\n');
   const statuses = []; let buf = '';
   child.stdout.on('data', d => { buf += d; let i; while ((i = buf.indexOf('\n')) >= 0) { const s = JSON.parse(buf.slice(0, i)).status; buf = buf.slice(i + 1); statuses.push(s); onStatus?.(s, child); } });
@@ -49,4 +50,8 @@ test('email → password → emailed code → ready', { skip: !hasBrowser && 'no
 test('wrong password is reported', { skip: !hasBrowser && 'no Playwright browser', timeout: 120000 }, async () => {
   const s = await run({ email: 'user@example.com', password: 'wrong' });
   assert.equal(s.at(-1), 'login_failed');
+});
+test('Cloudflare challenge is reported as captcha, not bypassed', { skip: !hasBrowser && 'no Playwright browser', timeout: 120000 }, async () => {
+  const s = await run({ email: 'user@example.com', password: 'right' }, undefined, '/cf');
+  assert.equal(s.at(-1), 'captcha_required');
 });

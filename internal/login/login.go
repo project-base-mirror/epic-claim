@@ -33,7 +33,7 @@ var Messages = map[string]string{
 	"code_required":       "Epic 要求输入邮箱/短信验证码，请在控制台中提交验证码。",
 	"code_submitted":      "验证码已提交，正在等待 Epic 确认…",
 	"ready":               "已登录，浏览器会话已保存。",
-	"captcha_required":    "Epic 弹出了人机验证（captcha），无法自动完成。请按 README 用 login.mjs 手动登录。",
+	"captcha_required":    "Epic/Cloudflare 弹出了人机验证，无头浏览器无法自动完成。请按 README 手动登录一次。",
 	"two_factor_required": "Epic 要求二次验证但未提供可用的 TOTP 密钥或验证码。",
 	"login_failed":        "Epic 拒绝了邮箱或密码，请检查后重试。",
 	"error":               "登录过程出错或页面结构无法识别，请稍后重试或手动登录。",

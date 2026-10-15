@@ -32,6 +32,9 @@ export function isSuccessURL(u) {
 // Returns: ready | captcha | bad_credentials | code | password | email | unknown
 export async function classify(page) {
   if (isSuccessURL(page.url())) return 'ready';
+  // Cloudflare "Just a moment… / One more step" interstitial (observed on
+  // 2026-10-15 for headless Chromium on the deployment host) is a challenge too.
+  if (/^just a moment/i.test(await page.title().catch(() => '')) || await page.locator('input[name="cf-turnstile-response"], #challenge-form, #cf-challenge-running').count().catch(() => 0)) return 'captcha';
   for (const f of await page.locator(SELECTORS.captchaFrame).all()) {
     const box = await f.boundingBox().catch(() => null);
     if (box && box.width >= 200 && box.height >= 200) return 'captcha';

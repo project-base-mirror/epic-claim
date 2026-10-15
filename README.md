@@ -2,7 +2,7 @@
 
 Go 管理服务 + Node/Playwright 领取 Worker，保留原仓库的轻量混合架构。支持多账号标签、免费游戏发现、持久化队列、自动检查和中文管理后台。
 
-**验证边界（2026-10-15）：控制台账号体系、凭据加密、登录 Worker 的状态机/验证码转交已通过离线测试和本地假登录页端到端测试；登录 Worker 尚未用真实 Epic 账号验证。Epic 对无头浏览器经常弹出人机验证（captcha），这种情况无法自动完成，只能按下文“手动登录”处理。领取适配器仍是实验实现：登录后的结账结构尚未验证，未知页面返回 unsupported。**
+**验证边界（2026-10-15）：控制台账号体系、凭据加密、登录 Worker 的状态机/验证码转交已通过离线测试和容器内 Chromium 对本地假登录页的端到端测试；登录 Worker 尚未用真实 Epic 账号验证。实测部署主机上无头 Chromium 打开 Epic 登录页会被 Cloudflare 安全检查拦截（报告为“需要验证码”），这种情况只能按下文“手动登录”处理。领取适配器仍是实验实现：登录后的结账结构尚未验证，未知页面返回 unsupported。**
 
 ## 已实现
 
@@ -27,18 +27,21 @@ Go 管理服务 + Node/Playwright 领取 Worker，保留原仓库的轻量混合
 
 ### 遇到 captcha 时：手动登录（后备方案）
 
-无头浏览器无法也不会自动处理人机验证。此时需要在有图形界面的环境中用同一个浏览器配置目录手动登录一次，会话之后会被复用：
+无头浏览器无法也不会自动处理人机验证。**2026-10-15 在 31.200 的容器内实测：直接打开 Epic 登录页即被 Cloudflare “Just a moment / One more step” 安全检查拦截（直连和经 7890 代理都会出现），因此网页登录目前大概率显示“需要验证码”。** 此时需在有图形界面的电脑上手动登录一次，再把浏览器配置拷进容器卷，会话之后会被复用：
 
 ```bash
-# 在部署主机上（需要图形桌面或 X 转发），停止容器以释放配置锁
-docker compose stop
-# 数据卷中的 profiles 目录挂到本机，例如：
-EPIC_PROFILE_ROOT=/var/lib/docker/volumes/epic-claim_epic-data/_data/profiles node workers/epic/login.mjs <账户编号>
-# 手动登录、完成验证后关闭窗口；确认目录属主仍为容器内 pwuser（uid 1001）
+# 1) 在有桌面的 Linux 电脑上（本仓库、Node 22、npx playwright install chromium 已就绪）
+EPIC_PROFILE_ROOT=$PWD/profiles node workers/epic/login.mjs <账户编号>   # 手动登录，完成后关闭窗口
+tar -C profiles -czf account.tgz account-<账户编号>
+# 2) 拷到 31.200，导入卷（先停容器释放配置锁）
+scp account.tgz root@31.200:/tmp/ && ssh root@31.200
+cd /opt/epic-claim && docker compose stop
+V=/var/lib/docker/volumes/epic-claim_epic-data/_data/profiles
+rm -rf $V/account-<账户编号> && tar -C $V -xzf /tmp/account.tgz && chown -R 1001:1001 $V/account-<账户编号> && rm /tmp/account.tgz
 docker compose start
 ```
 
-或者在本地 Linux 桌面以“本地运行”模式完成登录后再把对应 `account-N` 目录复制到卷中。不要把密码、验证码、cookies 或配置目录发给他人。
+注意浏览器版本需与容器内 Playwright（1.55.1）一致或更旧，否则 Chromium 可能拒绝打开较新版本写入的配置。不要把密码、验证码、cookies 或配置目录发给他人。
 
 ## 本地运行（Linux）
 
