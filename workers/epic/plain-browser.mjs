@@ -15,7 +15,7 @@ export function browserArgs(profile, url, env = process.env) {
   const args = [
     `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check', '--password-store=basic',
     '--disable-features=Translate,MediaRouter', '--window-position=0,0', `--window-size=${SCREEN.w},${SCREEN.h}`,
-    `--lang=${env.EPIC_BROWSER_LANG || 'en-US'}`,
+    `--lang=${env.EPIC_BROWSER_LANG || 'zh-CN'}`,
     // Containers have no user namespaces for Chromium's sandbox (same as Playwright's default);
     // --test-type only hides the resulting "unsupported flag" infobar. Pages cannot observe either.
     '--no-sandbox', '--test-type',
@@ -23,7 +23,8 @@ export function browserArgs(profile, url, env = process.env) {
     // written to <profile>/DevToolsActivePort). Never exposed outside the container.
     '--remote-debugging-address=127.0.0.1', '--remote-debugging-port=0',
   ];
-  const proxy = env.EPIC_BROWSER_PROXY || '';
+  // Default: direct (the proxy exit IP gets stuck on Cloudflare). 'env' = use HTTP(S)_PROXY.
+  const proxy = env.EPIC_BROWSER_PROXY || 'direct';
   if (proxy === 'direct') args.push('--no-proxy-server');
   else if (/^(https?|socks5):\/\/[^\s]+$/.test(proxy)) args.push(`--proxy-server=${proxy}`);
   args.push(url);
@@ -32,8 +33,8 @@ export function browserArgs(profile, url, env = process.env) {
 
 export function browserEnv(env = process.env) {
   const out = { ...env, GOOGLE_API_KEY: 'no', GOOGLE_DEFAULT_CLIENT_ID: 'no', GOOGLE_DEFAULT_CLIENT_SECRET: 'no' };
-  if (env.EPIC_BROWSER_TZ) out.TZ = env.EPIC_BROWSER_TZ;
-  if (env.EPIC_BROWSER_PROXY === 'direct') for (const k of ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy', 'ALL_PROXY', 'all_proxy']) delete out[k];
+  out.TZ = env.EPIC_BROWSER_TZ || 'Asia/Shanghai';
+  if ((env.EPIC_BROWSER_PROXY || 'direct') === 'direct') for (const k of ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy', 'ALL_PROXY', 'all_proxy']) delete out[k];
   return out;
 }
 

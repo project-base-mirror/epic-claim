@@ -11,11 +11,11 @@ services:
       # Required: AES-256-GCM key for stored Epic credentials. Generate with: openssl rand -base64 32
       EPIC_SECRET_KEY: "${EPIC_SECRET_KEY:?Set EPIC_SECRET_KEY in .env (openssl rand -base64 32)}"
       EPIC_PROFILE_ROOT: /data/profiles
-      # Manual-login browser network/locale. EPIC_BROWSER_PROXY: empty = use HTTP(S)_PROXY env,
+      # Manual-login browser network/locale. EPIC_BROWSER_PROXY: direct (default) | env = use HTTP(S)_PROXY | http(s)/socks5 URL,
       # "direct" = no proxy, or a proxy URL. Keep timezone/lang consistent with the exit IP.
-      EPIC_BROWSER_PROXY: "${EPIC_BROWSER_PROXY:-}"
-      EPIC_BROWSER_TZ: "${EPIC_BROWSER_TZ:-}"
-      EPIC_BROWSER_LANG: "${EPIC_BROWSER_LANG:-en-US}"
+      EPIC_BROWSER_PROXY: "${EPIC_BROWSER_PROXY:-direct}"
+      EPIC_BROWSER_TZ: "${EPIC_BROWSER_TZ:-Asia/Shanghai}"
+      EPIC_BROWSER_LANG: "${EPIC_BROWSER_LANG:-zh-CN}"
     volumes:
       - ./config.docker.yaml:/app/config.yaml:ro
       - epic-data:/data
