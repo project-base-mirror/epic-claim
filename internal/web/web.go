@@ -11,6 +11,7 @@ import (
 	"io"
 	"io/fs"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -192,6 +193,23 @@ func New(addr string, service Service, adminToken string, options ...Options) *h
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
+		if page, ok := pages[strings.TrimSuffix(r.URL.Path, "/")]; ok || r.URL.Path == "/" {
+			// Client-routed pages: distinct URLs that survive refresh and deep links.
+			// With web auth enabled, anonymous visitors are redirected to /login.
+			if ok && page != "login" && opt != nil && opt.session(r) == nil {
+				http.Redirect(w, r, "/login?next="+url.QueryEscape(r.URL.Path), http.StatusFound)
+				return
+			}
+			if r.URL.Path == "/" && opt != nil && opt.session(r) == nil {
+				http.Redirect(w, r, "/login", http.StatusFound)
+				return
+			}
+			w.Header().Set("Cache-Control", "no-store")
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			b, _ := fs.ReadFile(sub, "index.html")
+			_, _ = w.Write(b)
+			return
+		}
 		http.FileServer(http.FS(sub)).ServeHTTP(w, r)
 	}))
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -204,6 +222,9 @@ func New(addr string, service Service, adminToken string, options ...Options) *h
 	})
 	return &http.Server{Addr: addr, Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 45 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10}
 }
+
+var pages = map[string]string{"/login": "login", "/games": "games", "/accounts": "accounts", "/jobs": "jobs", "/schedule": "schedule", "/settings": "settings", "/index.html": "overview"}
+
 func positiveID(w http.ResponseWriter, r *http.Request) (int64, bool) {
 	id, e := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if e != nil || id < 1 {
