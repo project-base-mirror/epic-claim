@@ -53,6 +53,7 @@ func (s *SQLite) migrate() error {
 		{"credentials", `ALTER TABLE accounts ADD COLUMN credentials BLOB`},
 		{"email_hint", `ALTER TABLE accounts ADD COLUMN email_hint TEXT NOT NULL DEFAULT ''`},
 		{"login_message", `ALTER TABLE accounts ADD COLUMN login_message TEXT NOT NULL DEFAULT ''`},
+		{"browser_route", `ALTER TABLE accounts ADD COLUMN browser_route TEXT NOT NULL DEFAULT ''`},
 	} {
 		if !cols[c.name] {
 			if _, err = s.db.Exec(c.ddl); err != nil {
@@ -229,4 +230,25 @@ func (s *SQLite) RecordClaim(ctx context.Context, accountID int64, namespace, of
 		return err
 	}
 	return tx.Commit()
+}
+
+// AccountRoute returns the per-account browser route ("" = follow global).
+func (s *SQLite) AccountRoute(ctx context.Context, id int64) (string, error) {
+	var r string
+	err := s.db.QueryRowContext(ctx, `SELECT browser_route FROM accounts WHERE id=?`, id).Scan(&r)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	return r, err
+}
+
+func (s *SQLite) SetAccountRoute(ctx context.Context, id int64, route string) error {
+	r, err := s.db.ExecContext(ctx, `UPDATE accounts SET browser_route=? WHERE id=?`, route, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := r.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }

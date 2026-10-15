@@ -9,8 +9,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"github.com/project-base-mirror/epic-claim/internal/netcfg"
 	"net"
 	"net/http"
+	"os"
+	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
@@ -39,6 +42,8 @@ type AuthStore interface {
 	SetCredentials(ctx context.Context, id int64, blob []byte, emailHint string) error
 	Credentials(context.Context, int64) ([]byte, error)
 	ClaimableJobs(context.Context, int64) ([]store.Job, error)
+	AccountRoute(context.Context, int64) (string, error)
+	SetAccountRoute(context.Context, int64, string) error
 }
 
 type LoginRunner interface {
@@ -55,6 +60,7 @@ type Options struct {
 	Secrets                  *secret.Box // nil: credentials cannot be stored
 	Login                    LoginRunner
 	AllowRegistrationDefault bool
+	NetTestCommand           []string // 测试连接 worker; nil disables the button
 }
 
 type principal struct {
@@ -301,6 +307,81 @@ func (o *Options) apiRoutes(api *http.ServeMux) {
 			return
 		}
 		respond(w, map[string]bool{"ok": true}, o.Auth.SetSetting(r.Context(), "allow_registration", strconv.FormatBool(in.AllowRegistration)))
+	})
+	api.HandleFunc("GET /api/network", func(w http.ResponseWriter, r *http.Request) {
+		g, err := netcfg.Load(r.Context(), o.Auth)
+		respond(w, map[string]any{"global": g, "effective": netcfg.Resolve(g, ""), "default_proxy": netcfg.DefaultProxy, "can_test": o.NetTestCommand != nil}, err)
+	})
+	api.HandleFunc("PUT /api/network", func(w http.ResponseWriter, r *http.Request) {
+		if !current(r).user.IsAdmin {
+			fail(w, 403, "仅管理员可以修改设置")
+			return
+		}
+		var g netcfg.Global
+		if !decode(w, r, &g) {
+			return
+		}
+		if err := netcfg.Save(r.Context(), o.Auth, g); err != nil {
+			fail(w, 400, err.Error())
+			return
+		}
+		respond(w, map[string]any{"effective": netcfg.Resolve(g, "")}, nil)
+	})
+	api.HandleFunc("POST /api/network/test", func(w http.ResponseWriter, r *http.Request) {
+		if !current(r).user.IsAdmin || o.NetTestCommand == nil {
+			fail(w, 403, "不可用")
+			return
+		}
+		var in struct {
+			Global  *netcfg.Global `json:"global"`
+			Account string         `json:"account_route"`
+		}
+		if r.ContentLength > 0 && !decode(w, r, &in) {
+			return
+		}
+		g, err := netcfg.Load(r.Context(), o.Auth)
+		if err != nil {
+			respond(w, nil, err)
+			return
+		}
+		if in.Global != nil {
+			g = *in.Global
+		}
+		if netcfg.ValidAccountRoute(in.Account) != nil || (g.Route == "proxy" && netcfg.ValidProxy(g.ProxyURL) != nil) {
+			fail(w, 400, "代理地址格式不正确")
+			return
+		}
+		eff := netcfg.Resolve(g, in.Account)
+		ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, o.NetTestCommand[0], o.NetTestCommand[1:]...)
+		cmd.Env = append(os.Environ(), eff.Env()...)
+		out, err := cmd.Output()
+		var res map[string]any
+		if err != nil || json.Unmarshal(out, &res) != nil {
+			fail(w, 502, "测试未能完成（浏览器启动失败或超时）")
+			return
+		}
+		res["route"] = eff
+		respond(w, res, nil)
+	})
+	api.HandleFunc("PUT /api/accounts/{id}/route", func(w http.ResponseWriter, r *http.Request) {
+		id, ok := positiveID(w, r)
+		if !ok {
+			return
+		}
+		var in struct {
+			Route string `json:"route"`
+		}
+		if !decode(w, r, &in) {
+			return
+		}
+		in.Route = strings.TrimSpace(in.Route)
+		if err := netcfg.ValidAccountRoute(in.Route); err != nil {
+			fail(w, 400, err.Error())
+			return
+		}
+		respond(w, map[string]bool{"ok": true}, o.Auth.SetAccountRoute(r.Context(), id, in.Route))
 	})
 	api.HandleFunc("POST /api/accounts/{id}/login", func(w http.ResponseWriter, r *http.Request) {
 		id, ok := positiveID(w, r)

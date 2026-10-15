@@ -9,6 +9,7 @@ import (
 	"errors"
 	"io"
 	"log"
+	"os"
 	"os/exec"
 	"regexp"
 	"strconv"
@@ -176,6 +177,8 @@ func (rn *run) publish(e Event) {
 }
 
 type Runner struct {
+	// Env returns extra environment (browser route) for an account's worker.
+	Env func(id int64) []string
 	// ClaimMessage validates a worker claim status and returns its message.
 	ClaimMessage func(status string) (string, bool)
 	Command      []string
@@ -214,6 +217,9 @@ func (r *Runner) Start(id int64, c Credentials) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	cmd := exec.CommandContext(ctx, r.Command[0], r.Command[1:]...)
+	if r.Env != nil {
+		cmd.Env = append(os.Environ(), r.Env(id)...)
+	}
 	cmd.WaitDelay = 3 * time.Second
 	configureProcess(cmd)
 	stdin, err := cmd.StdinPipe()

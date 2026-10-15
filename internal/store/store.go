@@ -45,6 +45,7 @@ type Account struct {
 	HasCreds      bool      `json:"has_credentials"`
 	EmailHint     string    `json:"email_hint"`
 	LoginMessage  string    `json:"login_message"`
+	BrowserRoute  string    `json:"browser_route"`
 	LoginRunning  bool      `json:"login_running"`
 	UpdatedAt     time.Time `json:"updated_at"`
 }
@@ -141,7 +142,7 @@ func (s *SQLite) Close() error {
 	return err
 }
 func (s *SQLite) ListAccounts(ctx context.Context) ([]Account, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,name,disabled,session_status,updated_at,credentials IS NOT NULL,email_hint,login_message FROM accounts ORDER BY id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id,name,disabled,session_status,updated_at,credentials IS NOT NULL,email_hint,login_message,browser_route FROM accounts ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -150,7 +151,7 @@ func (s *SQLite) ListAccounts(ctx context.Context) ([]Account, error) {
 	for rows.Next() {
 		var a Account
 		var t string
-		if err = rows.Scan(&a.ID, &a.Name, &a.Disabled, &a.SessionStatus, &t, &a.HasCreds, &a.EmailHint, &a.LoginMessage); err != nil {
+		if err = rows.Scan(&a.ID, &a.Name, &a.Disabled, &a.SessionStatus, &t, &a.HasCreds, &a.EmailHint, &a.LoginMessage, &a.BrowserRoute); err != nil {
 			return nil, err
 		}
 		a.UpdatedAt = parse(t)

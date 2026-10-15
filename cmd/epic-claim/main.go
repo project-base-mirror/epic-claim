@@ -7,6 +7,7 @@ import (
 	"github.com/project-base-mirror/epic-claim/internal/config"
 	"github.com/project-base-mirror/epic-claim/internal/epic"
 	"github.com/project-base-mirror/epic-claim/internal/login"
+	"github.com/project-base-mirror/epic-claim/internal/netcfg"
 	"github.com/project-base-mirror/epic-claim/internal/scheduler"
 	"github.com/project-base-mirror/epic-claim/internal/secret"
 	"github.com/project-base-mirror/epic-claim/internal/store"
@@ -15,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -52,14 +54,24 @@ func main() {
 	defer st.Close()
 	ec := epic.NewClient(cfg.Locale, cfg.Country)
 	ec.Endpoint = cfg.EpicEndpoint
-	sch := &scheduler.Scheduler{Epic: ec, Store: st, Claimer: &claimer.Exec{Command: cfg.Claimer.Command, Timeout: cfg.Claimer.Timeout}, AccountDelay: cfg.Schedule.AccountDelay}
+	// Browser route/timezone/language: DB settings (global + per-account), .env as defaults.
+	netEnv := func(ctx context.Context, id int64) []string {
+		g, _ := netcfg.Load(ctx, st)
+		r, _ := st.AccountRoute(ctx, id)
+		return netcfg.Resolve(g, r).Env()
+	}
+	sch := &scheduler.Scheduler{Epic: ec, Store: st, Claimer: &claimer.Exec{Env: netEnv, Command: cfg.Claimer.Command, Timeout: cfg.Claimer.Timeout}, AccountDelay: cfg.Schedule.AccountDelay}
 	done := make(chan struct{})
 	go func() { defer close(done); sch.Run(ctx) }()
-	runner := &login.Runner{Command: cfg.Login.Command, Timeout: cfg.Login.Timeout, Store: st, ClaimMessage: func(s string) (string, bool) {
+	runner := &login.Runner{Env: func(id int64) []string {
+		c, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		return netEnv(c, id)
+	}, Command: cfg.Login.Command, Timeout: cfg.Login.Timeout, Store: st, ClaimMessage: func(s string) (string, bool) {
 		m, ok := claimer.Statuses[store.ClaimStatus(s)]
 		return m, ok
 	}}
-	srv := web.New(cfg.Listen, sch, token, web.Options{Auth: st, Secrets: box, Login: runner, AllowRegistrationDefault: cfg.AllowRegistration})
+	srv := web.New(cfg.Listen, sch, token, web.Options{NetTestCommand: netTestCommand(cfg.Login.Command), Auth: st, Secrets: box, Login: runner, AllowRegistrationDefault: cfg.AllowRegistration})
 	go func() {
 		log.Printf("admin listening on %s", cfg.Listen)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -72,4 +84,14 @@ func main() {
 	defer cancel()
 	_ = srv.Shutdown(shutdown)
 	<-done
+}
+
+// netTestCommand runs workers/epic/net-test.mjs the same way as the login worker.
+func netTestCommand(login []string) []string {
+	out := append([]string(nil), login...)
+	if n := len(out); n > 0 && strings.HasSuffix(out[n-1], "login-headless.mjs") {
+		out[n-1] = strings.TrimSuffix(out[n-1], "login-headless.mjs") + "net-test.mjs"
+		return out
+	}
+	return nil
 }

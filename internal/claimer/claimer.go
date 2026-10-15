@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -29,6 +30,8 @@ type Claimer interface {
 	Claim(context.Context, Request) ([]Result, error)
 }
 type Exec struct {
+	// Env returns extra environment (browser route) for an account's worker.
+	Env            func(ctx context.Context, accountID int64) []string
 	Command        []string
 	Timeout        time.Duration
 	MaxOutputBytes int64
@@ -87,6 +90,9 @@ func (e *Exec) Claim(ctx context.Context, req Request) ([]Result, error) {
 		return nil, errors.New("cannot encode worker request")
 	}
 	cmd := exec.CommandContext(ctx, e.Command[0], e.Command[1:]...)
+	if e.Env != nil {
+		cmd.Env = append(os.Environ(), e.Env(ctx, req.AccountID)...)
+	}
 	configureProcess(cmd)
 	cmd.WaitDelay = 2 * time.Second
 	cmd.Stdin = bytes.NewReader(in)
